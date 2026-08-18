@@ -7,6 +7,10 @@
     - layer_241656 (nahalin new)      -> bottom
     - layer_241657 (delta 2024-2025)  -> top
 
+  Year slider: each year has a "base" raster layer + a cumulative
+  "delta" raster layer. Moving the slider calls govmap.setVisibleLayers
+  to turn the previous year's pair off and the target year's pair on.
+
   Docs:
   - https://api.govmap.gov.il/docs/javascript-functions/create-map
   - https://api.govmap.gov.il/docs/javascript-functions/set-background
@@ -124,6 +128,37 @@
     display: inline-block;
     border-radius: 3px;
   }
+
+  /* Year slider */
+  .year-slider {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 16px;
+    padding: 14px 18px;
+    background: #f9fafb;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+  }
+  .year-slider .year-label {
+    font-weight: 600;
+    min-width: 90px;
+    text-align: center;
+    color: var(--accent);
+  }
+  .year-slider input[type="range"] {
+    flex: 1;
+    accent-color: var(--accent);
+  }
+  .year-ticks {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.8rem;
+    color: var(--muted);
+    padding: 0 2px;
+    margin-top: -8px;
+    margin-bottom: 16px;
+  }
   footer {
     text-align: center;
     color: var(--muted);
@@ -165,16 +200,26 @@
   <section id="visualization">
     <h2>תצוגת מפה - שינויי בנייה</h2>
     <p>
-      המפה שלהלן מציגה תצלום אוויר (אורתופוטו) כרקע, עם שכבת השינויים המצטברים (דלתא) 2024–2025
-      מוצגת מעל שכבת המצב הקיים (נחלין).
+      המפה שלהלן מציגה תצלום אוויר (אורתופוטו) כרקע. הזיזו את המחוון כדי לעבור בין השנים -
+      כל שנה מציגה את שכבת המצב הקיים של נחלין יחד עם שכבת השינויים המצטברים (דלתא) המתאימה.
     </p>
+
+    <div class="year-slider">
+      <span id="yearLabel" class="year-label">2024–2025</span>
+      <input id="yearSlider" type="range" min="0" max="1" step="1" value="1"
+             oninput="setYear(this.value)" aria-label="בחירת שנה" />
+    </div>
+    <div class="year-ticks">
+      <span>2023–2024</span>
+      <span>2024–2025</span>
+    </div>
 
     <div id="map"></div>
 
     <div class="legend">
       <span><i style="background:#9ca3af;"></i> רקע: תצלום אוויר (אורתופוטו)</span>
       <span><i style="background:#60a5fa;"></i> נחלין - מצב קיים</span>
-      <span><i style="background:#f87171;"></i> דלתא מצטברת 2024–2025</span>
+      <span><i style="background:#f87171;"></i> דלתא מצטברת (לפי השנה הנבחרת)</span>
     </div>
   </section>
 
@@ -200,16 +245,35 @@
 </footer>
 
 <script>
+  // One entry per year available on the slider, in chronological order.
+  // "base" = current-state raster, "delta" = cumulative change raster.
+  // Order within each pair matters for stacking: base first (bottom),
+  // delta second (top).
+  const YEARS_DATA = [
+    { label: "2023–2024", base: "layer_241661", delta: "layer_241660" }, // Nahalin 2024 / delta 2023-2024 cum
+    { label: "2024–2025", base: "layer_241656", delta: "layer_241657" }  // Nahalin new / delta 2024-2025 cum
+  ];
+
+  // All layers registered on the map (so GovMap knows about them even
+  // while hidden) - flattened from YEARS_DATA, base before delta per year.
+  const ALL_LAYERS = YEARS_DATA.flatMap(y => [y.base, y.delta]);
+
+  let currentYearIndex = YEARS_DATA.length - 1; // default: most recent year
+
   function initGovMap() {
+    const initial = YEARS_DATA[currentYearIndex];
+
     govmap.createMap('map', {
       token: GOVMAP_TOKEN,
 
       // Orthophoto background
       background: "1",
 
-      // Private raster layers: nahalin (bottom) below delta (top)
-      visibleLayers: ["layer_241656", "layer_241657"],
-      layers: ["layer_241656", "layer_241657"],
+      // Only the current year's pair starts visible; the rest stay
+      // registered (via "layers") but off, ready for the slider to
+      // flip on with setVisibleLayers.
+      visibleLayers: [initial.base, initial.delta],
+      layers: ALL_LAYERS,
 
       layersMode: 2,      // toggle panel + legend
       bgButton: true,
@@ -220,13 +284,31 @@
       onLoad: function () {
         console.log('GovMap loaded');
         // Re-assert order/visibility after load as a safety net
-        govmap.setVisibleLayers(['layer_241656', 'layer_241657']);
+        govmap.setVisibleLayers([initial.base, initial.delta]);
       },
 
       onError: function (e) {
         console.error('GovMap error', e);
       }
     });
+  }
+
+  // Called on slider input. Turns the previous year's layer pair off
+  // and the target year's layer pair on, in one call.
+  function setYear(index) {
+    index = Number(index);
+    if (index === currentYearIndex) return;
+
+    const prev = YEARS_DATA[currentYearIndex];
+    const next = YEARS_DATA[index];
+
+    govmap.setVisibleLayers(
+      [next.base, next.delta],   // layers to turn ON
+      [prev.base, prev.delta]    // layers to turn OFF
+    );
+
+    currentYearIndex = index;
+    document.getElementById('yearLabel').textContent = next.label;
   }
 </script>
 
