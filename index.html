@@ -1,29 +1,49 @@
 <!--
   Building-changes report template
   =================================
-  Static HTML report meant for GitHub Pages. The map section uses the
-  GovMap JavaScript API (govmap.createMap) with:
-    - background: orthophoto
-    - layer_241656 (nahalin new)      -> bottom
-    - layer_241657 (delta 2024-2025)  -> top
+  Static HTML report meant for GitHub Pages, hosted at
+  https://elishago.github.io/map_changes/ (the GovMap token below is
+  registered for that exact domain). The map section uses the GovMap
+  JavaScript API (govmap.createMap) with an orthophoto background plus,
+  per year, a raster layer (bottom) and a delta/change vector layer
+  (top) - see YEARS_DATA further down for the current layer ids.
 
   Year slider: each year has a "base" raster layer + a cumulative
   "delta" raster layer. Moving the slider calls govmap.setVisibleLayers
   to turn the previous year's pair off and the target year's pair on.
 
-  Polygon list + comparison (added this pass):
+  Polygon list + comparison:
   - govmap.getLayerEntities({layerName, token}) lists every polygon in
-    the CURRENT delta layer (the vector change layer for the selected
-    year) - id + WKT geometry. We show just the id in a scrollable list.
-  - Clicking an item computes the polygon's bounding-box center from
-    its WKT geometry, drops a pin on the main map with setMapMarker,
-    and builds two extra maps below (govmap.createMap again with a
-    different div id + center/level/setMapMarker) zoomed to that point:
-    one for the year before the active one, one for the active year.
+    the CURRENT delta layer (the vector change layer for the year
+    selected on the slider) - id + WKT geometry. We show just the id
+    in a scrollable list, next to the map.
+  - Clicking a list item computes the polygon's bounding-box center
+    from its WKT geometry, drops a pin on the main map with
+    setMapMarker, and (re)builds two fixed comparison maps below: one
+    always showing the 2024 raster, one always showing the 2025 raster
+    - both centered/zoomed on that polygon - regardless of which year
+    is currently active on the main slider. That's a deliberate,
+    always-both-years comparison, not "year before the slider".
+
+  LIVE TEST FINDING (checked directly against
+  https://elishago.github.io/map_changes/): background/layers/token/
+  domain all work correctly - createMap builds an iframe to
+  www.govmap.gov.il with api_token/lay/laym/b params exactly as
+  expected, and it loads (200, "Successfully connected to a new
+  govmap iframe"). BUT govmap.getLayerEntities() hung indefinitely in
+  every test - no resolve, no reject, no console error - even for the
+  public "GASSTATIONS" layer straight from GovMap's own docs example,
+  and even with the token omitted, and even ~25s after page load (so
+  not a startup race). This looks like a GovMap-side permission gap
+  for entity/feature queries rather than a bug in this file. The code
+  now races it against a timeout (GET_ENTITIES_TIMEOUT_MS) so the
+  polygon list fails visibly instead of hanging forever - worth
+  raising with GovMap/Mapi support if you still see the timeout
+  message after redeploying.
 
   Two assumptions worth knowing, because the docs don't spell them out:
-  1. The polygons live on the DELTA layer (241657 / 241660), not the
-     "nahalin" base raster - that's the only one of the two that makes
+  1. The polygons live on the DELTA layers (241657 / 241662), not the
+     "nahalin" base rasters - that's the only one of the two that makes
      sense as a vector layer of change polygons. If it's actually the
      other layer, swap `.delta` for `.base` in YEARS_DATA usage below.
   2. Multi-map targeting (mapDivId) is documented as "supported by
@@ -31,9 +51,8 @@
      functions that don't already take an object (e.g. setVisibleLayers
      takes two array args, not an object). To stay safe, the main map
      is the only long-lived map instance - the two comparison maps are
-     torn down and rebuilt fresh on every click/year change instead of
-     being redirected via mapDivId, so there's never a moment where an
-     un-scoped call could leak into the wrong map.
+     torn down and rebuilt fresh on every click, so there's never a
+     moment where an un-scoped call could leak into the wrong map.
 
   Docs:
   - https://api.govmap.gov.il/docs/javascript-functions/create-map
@@ -255,6 +274,11 @@
     margin-bottom: 12px;
   }
   .compare-header h3 { margin: 0; font-size: 1.05rem; }
+  .compare-note {
+    margin: 0 0 14px;
+    font-size: 0.82rem;
+    color: var(--muted);
+  }
   .close-btn {
     border: 1px solid var(--line);
     background: #fff;
@@ -268,11 +292,8 @@
   .close-btn:hover { background: #f3f4f6; }
   .compare-maps {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
     gap: 16px;
-  }
-  @media (max-width: 700px) {
-    .compare-maps { grid-template-columns: 1fr; }
   }
   .compare-map-label {
     margin: 0 0 6px;
@@ -342,17 +363,17 @@
       המפה שלהלן מציגה תצלום אוויר (אורתופוטו) כרקע. הזיזו את המחוון כדי לעבור בין השנים -
       כל שנה מציגה את שכבת המצב הקיים של נחלין יחד עם שכבת השינויים המצטברים (דלתא) המתאימה.
       ברשימה מימין לצד המפה מופיעים הפוליגונים של שכבת הדלתא הפעילה - לחיצה על פוליגון מסמנת
-      אותו על המפה ופותחת למטה השוואה בין השנה שלפניו לשנה הנוכחית.
+      אותו על המפה ופותחת למטה השוואה של תצלומי האוויר: 2024 מול 2025, ממוקדת על הפוליגון שנבחר.
     </p>
 
     <div class="year-slider">
-      <span id="yearLabel" class="year-label">2024–2025</span>
+      <span id="yearLabel" class="year-label" dir="ltr">2025</span>
       <input id="yearSlider" type="range" min="0" max="1" step="1" value="1"
              oninput="setYear(this.value)" aria-label="בחירת שנה" />
     </div>
     <div class="year-ticks">
-      <span>2023–2024</span>
-      <span>2024–2025</span>
+      <span dir="ltr">2024</span>
+      <span dir="ltr">2025</span>
     </div>
 
     <div class="map-layout">
@@ -377,15 +398,9 @@
         <h3 id="compareTitle">השוואת שנים</h3>
         <button type="button" class="close-btn" onclick="closeComparison()">✕ סגירה</button>
       </div>
-      <div class="compare-maps">
-        <div class="compare-map-col" id="mapPrevCol">
-          <p class="compare-map-label" id="prevYearLabel">שנה קודמת</p>
-          <div class="compare-map-slot"><div id="mapPrev" class="compare-map"></div></div>
-        </div>
-        <div class="compare-map-col" id="mapCurrentCol">
-          <p class="compare-map-label" id="currYearLabel">שנה נוכחית</p>
-          <div class="compare-map-slot"><div id="mapCurrent" class="compare-map"></div></div>
-        </div>
+      <p class="compare-note">תצלומי האוויר (רסטר) של שתי השנים, ממוקדים על הפוליגון שנבחר - ללא קשר לשנה הפעילה במחוון למעלה.</p>
+      <div class="compare-maps" id="compareMaps">
+        <!-- one column per YEARS_DATA entry, built by JS -->
       </div>
     </div>
   </section>
@@ -414,14 +429,16 @@
 <script>
   const MAIN_MAP_ID = 'map';
   const COMPARE_ZOOM_LEVEL = 9; // 0-10, 10 = tightest/most detail (see zoomToXY docs)
+  const GET_ENTITIES_TIMEOUT_MS = 10000; // see note in refreshPolygonList() - getLayerEntities can hang forever
 
   // One entry per year available on the slider, in chronological order.
-  // "base" = current-state raster, "delta" = cumulative change VECTOR
-  // layer (this is the one we list polygons from). Order within each
-  // pair matters for stacking: base first (bottom), delta second (top).
+  // "base" = that year's raster (aerial photo), "delta" = cumulative
+  // change VECTOR layer through that year (this is the one we list
+  // polygons from). Order within each pair matters for stacking on the
+  // main map: base first (bottom), delta second (top).
   const YEARS_DATA = [
-    { label: "2023–2024", base: "layer_241661", delta: "layer_241660" }, // Nahalin 2024 / delta 2023-2024 cum
-    { label: "2024–2025", base: "layer_241656", delta: "layer_241657" }  // Nahalin new / delta 2024-2025 cum
+    { label: "2024", base: "layer_241661", delta: "layer_241662" }, // Nahalin 2024 raster / delta 2023-2024 cum
+    { label: "2025", base: "layer_241656", delta: "layer_241657" }  // Nahalin 2025 raster / delta 2024-2025 cum
   ];
 
   // All layers registered on the main map (so GovMap knows about them
@@ -431,6 +448,7 @@
   let currentYearIndex = YEARS_DATA.length - 1; // default: most recent year
   let currentEntities = [];   // polygons fetched for the active delta layer
   let selectedIndex = -1;     // index into currentEntities, -1 = none selected
+  let polygonRequestToken = 0; // bumped on every refreshPolygonList() call; see requestToken usage there
 
   function initGovMap() {
     const initial = YEARS_DATA[currentYearIndex];
@@ -500,9 +518,32 @@
     listEl.innerHTML = '<p class="placeholder">טוען פוליגונים...</p>';
 
     const deltaLayer = YEARS_DATA[currentYearIndex].delta;
+    const requestToken = ++polygonRequestToken; // guards against a slow/late response overwriting a newer request
 
-    govmap.getLayerEntities({ layerName: deltaLayer, token: GOVMAP_TOKEN })
+    // getLayerEntities has been observed to hang indefinitely on the
+    // live deployment (no resolve, no reject, no console error - tested
+    // directly against elishago.github.io/map_changes, reproduced even
+    // with a stock public layer name and with the token omitted). Race
+    // it against a timeout so the UI fails visibly instead of being
+    // stuck on "טוען פוליגונים..." forever. If you see the timeout
+    // message below, this is very likely a GovMap-side permission gap
+    // for entity/feature queries (basic map display worked fine in
+    // testing) - worth confirming with GovMap/Mapi support.
+    const request = govmap.getLayerEntities({ layerName: deltaLayer, token: GOVMAP_TOKEN });
+    const timeout = new Promise(function (resolve) {
+      setTimeout(function () { resolve({ __timedOut: true }); }, GET_ENTITIES_TIMEOUT_MS);
+    });
+
+    Promise.race([request, timeout])
       .then(function (response) {
+        if (requestToken !== polygonRequestToken) return; // a newer request superseded this one
+
+        if (response && response.__timedOut) {
+          listEl.innerHTML = '<p class="placeholder">הבקשה לרשימת הפוליגונים לא נענתה (timeout). ' +
+                              'כדאי לבדוק מול תמיכת GovMap/מפ"י אם יש הרשאה לשליפת ישויות עבור ה-token הזה.</p>';
+          return;
+        }
+
         // Docs example shows a plain array; guard for a {data: [...]}
         // shape too in case the live API wraps it.
         const list = Array.isArray(response) ? response : (response && response.data) || [];
@@ -515,13 +556,20 @@
 
         listEl.innerHTML = list.map(function (entity, i) {
           return '<button type="button" class="polygon-item" onclick="selectPolygon(' + i + ')">' +
-                 'פוליגון #' + entity.entityID + '</button>';
+                 'פוליגון <bdi>#' + escapeHtml(entity.entityID) + '</bdi></button>';
         }).join('');
       })
       .catch(function (err) {
+        if (requestToken !== polygonRequestToken) return;
         console.error('getLayerEntities failed for ' + deltaLayer, err);
         listEl.innerHTML = '<p class="placeholder">שגיאה בטעינת רשימת הפוליגונים.</p>';
       });
+  }
+
+  function escapeHtml(value) {
+    return String(value).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
   }
 
   // Extracts the SHAPE field (WKT-ish text, e.g. "POLYGON ((x y, x y, ...))")
@@ -585,75 +633,67 @@
     openComparison(entity, center);
   }
 
+  // Always builds one small map PER YEARS_DATA ENTRY (today: 2024 and
+  // 2025), each showing only that year's RASTER, zoomed/pinned to the
+  // clicked polygon - regardless of which year is active on the main
+  // slider. Today that's exactly "one map = 2024 raster, one map =
+  // 2025 raster"; if a third year is added later this naturally grows
+  // to three comparison maps instead of needing new logic.
   function openComparison(entity, center) {
-    const panel = document.getElementById('comparePanel');
-    panel.hidden = false;
-    document.getElementById('compareTitle').textContent = 'השוואת שנים - פוליגון #' + entity.entityID;
+    document.getElementById('comparePanel').hidden = false;
+    document.getElementById('compareTitle').innerHTML = 'השוואת שנים - פוליגון <bdi>#' + escapeHtml(entity.entityID) + '</bdi>';
 
-    const currentYear = YEARS_DATA[currentYearIndex];
-    const prevIndex = currentYearIndex - 1;
+    rebuildCompareColumns();
 
-    document.getElementById('currYearLabel').textContent = 'שנה נוכחית: ' + currentYear.label;
-
-    if (prevIndex < 0) {
-      // No earlier year in YEARS_DATA to compare against
-      document.getElementById('prevYearLabel').textContent = 'שנה קודמת';
-      resetMapSlot('mapPrev', 'אין שכבת נתונים לשנה שלפני ' + currentYear.label);
-      resetMapSlot('mapCurrent');
-      createComparisonMap('mapCurrent', currentYear, center);
-    } else {
-      const prevYear = YEARS_DATA[prevIndex];
-      document.getElementById('prevYearLabel').textContent = 'שנה קודמת: ' + prevYear.label;
-      resetMapSlot('mapPrev');
-      resetMapSlot('mapCurrent');
-      // GovMap docs: wait for one createMap's init to finish before
-      // starting another, so this is chained rather than parallel.
-      createComparisonMap('mapPrev', prevYear, center, function () {
-        createComparisonMap('mapCurrent', currentYear, center);
+    // GovMap docs: wait for one createMap's init to finish before
+    // starting another, so these are chained rather than parallel.
+    let chain = Promise.resolve();
+    YEARS_DATA.forEach(function (yearEntry, i) {
+      chain = chain.then(function () {
+        return createComparisonMap('mapY' + i, yearEntry, center);
       });
-    }
-  }
-
-  function createComparisonMap(divId, yearEntry, center, onDone) {
-    govmap.createMap(divId, {
-      token: GOVMAP_TOKEN,
-      background: "1",
-      visibleLayers: [yearEntry.base, yearEntry.delta],
-      layers: [yearEntry.base, yearEntry.delta],
-      center: center,
-      level: COMPARE_ZOOM_LEVEL,
-      setMapMarker: true,   // drop a pin at map center (= the polygon) after load
-      bgButton: false,
-      zoomButtons: false,
-      showXY: false,
-      identifyOnClick: false,
-      layersMode: 4,        // hide the layers button on these small maps
-
-      onLoad: function () {
-        if (typeof onDone === 'function') onDone();
-      },
-      onError: function (e) {
-        console.error('GovMap comparison map error (' + divId + ')', e);
-      }
     });
   }
 
-  // Replaces a comparison map's container with a fresh empty div (tears
-  // down whatever govmap instance was living there), or with a "no
-  // data" placeholder when emptyMessage is given. Rebuilding fresh on
-  // every click sidesteps relying on undocumented mapDivId-scoping for
-  // functions that don't take an object param (see note at top of file).
-  function resetMapSlot(divId, emptyMessage) {
-    const col = document.getElementById(divId + 'Col');
-    const oldSlot = col.querySelector('.compare-map-slot');
-    const slot = document.createElement('div');
-    slot.className = 'compare-map-slot';
-    if (emptyMessage) {
-      slot.innerHTML = '<div class="compare-map empty">' + emptyMessage + '</div>';
-    } else {
-      slot.innerHTML = '<div id="' + divId + '" class="compare-map"></div>';
-    }
-    oldSlot.replaceWith(slot);
+  // Rebuilds #compareMaps from scratch: one label + empty map div per
+  // YEARS_DATA entry. Doing this fresh on every click (rather than
+  // reusing existing map divs) sidesteps relying on undocumented
+  // mapDivId-scoping for functions that don't take an object param
+  // (see note at top of file) - there's never a stale govmap instance
+  // left behind to accidentally target.
+  function rebuildCompareColumns() {
+    const container = document.getElementById('compareMaps');
+    container.innerHTML = YEARS_DATA.map(function (yearEntry, i) {
+      return '<div class="compare-map-col">' +
+             '<p class="compare-map-label" dir="ltr">' + escapeHtml(yearEntry.label) + '</p>' +
+             '<div id="mapY' + i + '" class="compare-map"></div>' +
+             '</div>';
+    }).join('');
+  }
+
+  function createComparisonMap(divId, yearEntry, center) {
+    return new Promise(function (resolve) {
+      govmap.createMap(divId, {
+        token: GOVMAP_TOKEN,
+        background: "1",
+        visibleLayers: [yearEntry.base],  // raster only - no delta overlay on these
+        layers: [yearEntry.base],
+        center: center,
+        level: COMPARE_ZOOM_LEVEL,
+        setMapMarker: true,   // drop a pin at map center (= the polygon) after load
+        bgButton: false,
+        zoomButtons: false,
+        showXY: false,
+        identifyOnClick: false,
+        layersMode: 4,        // hide the layers button on these small maps
+
+        onLoad: function () { resolve(); },
+        onError: function (e) {
+          console.error('GovMap comparison map error (' + divId + ')', e);
+          resolve(); // don't block the chain on one map failing
+        }
+      });
+    });
   }
 
   function closeComparison() {
@@ -661,8 +701,7 @@
     if (window.govmap) {
       govmap.clearMapMarker({ mapDivId: MAIN_MAP_ID });
     }
-    resetMapSlot('mapPrev');
-    resetMapSlot('mapCurrent');
+    document.getElementById('compareMaps').innerHTML = ''; // drop any live comparison map instances
     selectedIndex = -1;
     document.querySelectorAll('.polygon-item.active').forEach(function (btn) {
       btn.classList.remove('active');
