@@ -13,52 +13,52 @@
   to turn the previous year's pair off and the target year's pair on.
 
   Polygon list + comparison:
-  - govmap.getLayerEntities({layerName, token}) lists every polygon in
-    the CURRENT delta layer (the vector change layer for the year
-    selected on the slider) - id + WKT geometry. We show just the id
-    in a scrollable list, next to the map.
-  - Clicking a list item computes the polygon's bounding-box center
-    from its WKT geometry, drops a pin on the main map with
-    setMapMarker, and (re)builds two fixed comparison maps below: one
-    always showing the 2024 raster, one always showing the 2025 raster
-    - both centered/zoomed on that polygon - regardless of which year
-    is currently active on the main slider. That's a deliberate,
-    always-both-years comparison, not "year before the slider".
+  - POLYGON_DATA[currentYear] lists every polygon (id, x, y) for the
+    delta layer of the year selected on the slider. We show just the
+    id in a scrollable list, next to the map (see POLYGON_DATA note
+    below for where this data comes from).
+  - Clicking a list item drops a pin on the main map with setMapMarker
+    at that polygon's stored (x, y), and (re)builds two fixed
+    comparison maps below: one always showing the 2024 raster, one
+    always showing the 2025 raster - both centered/zoomed on that
+    polygon - regardless of which year is currently active on the main
+    slider. That's a deliberate, always-both-years comparison, not
+    "year before the slider".
 
-  LIVE TEST FINDING (checked directly against
-  https://elishago.github.io/map_changes/): background/layers/token/
-  domain all work correctly - createMap builds an iframe to
-  www.govmap.gov.il with api_token/lay/laym/b params exactly as
-  expected, and it loads (200, "Successfully connected to a new
-  govmap iframe"). BUT govmap.getLayerEntities() hung indefinitely in
+  WHY THE POLYGON LIST ISN'T LIVE-QUERIED FROM GOVMAP: tested directly
+  against https://elishago.github.io/map_changes/ - background/layers/
+  token/domain all work correctly (createMap's iframe to www.govmap.gov.il
+  connects fine), BUT govmap.getLayerEntities() hung indefinitely in
   every test - no resolve, no reject, no console error - even for the
   public "GASSTATIONS" layer straight from GovMap's own docs example,
-  and even with the token omitted, and even ~25s after page load (so
-  not a startup race). This looks like a GovMap-side permission gap
-  for entity/feature queries rather than a bug in this file. The code
-  now races it against a timeout (GET_ENTITIES_TIMEOUT_MS) so the
-  polygon list fails visibly instead of hanging forever - worth
-  raising with GovMap/Mapi support if you still see the timeout
-  message after redeploying.
+  even with the token omitted, even ~25s after page load. Looked like a
+  GovMap-side permission gap for entity/feature queries specifically
+  (basic map display works fine), not something fixable from this file.
 
-  Two assumptions worth knowing, because the docs don't spell them out:
-  1. The polygons live on the DELTA layers (241657 / 241662), not the
-     "nahalin" base rasters - that's the only one of the two that makes
-     sense as a vector layer of change polygons. If it's actually the
-     other layer, swap `.delta` for `.base` in YEARS_DATA usage below.
-  2. Multi-map targeting (mapDivId) is documented as "supported by
-     every function" but no example shows the exact call shape for
-     functions that don't already take an object (e.g. setVisibleLayers
-     takes two array args, not an object). To stay safe, the main map
-     is the only long-lived map instance - the two comparison maps are
-     torn down and rebuilt fresh on every click, so there's never a
-     moment where an un-scoped call could leak into the wrong map.
+  So instead: POLYGON_DATA below is baked in ahead of time from the
+  SAME source data you uploaded to GovMap (setlment_2/delta_output/
+  delta_<from>_<to>_cum.xlsx - each row already has a delta_id and a
+  precomputed centroid_x/centroid_y in the same ITM meters GovMap uses).
+  Regenerate it with generate_polygon_data.py whenever you add/update a
+  year of delta data - see that script's docstring. No live GovMap
+  entity query happens at all anymore; the list renders from
+  POLYGON_DATA synchronously, and clicking an item just zooms/pins to
+  its stored (x, y) - govmap.zoomToXY / setMapMarker don't care whether
+  those coordinates came from a live query or a baked-in table.
+
+  One assumption worth knowing, because the docs don't spell it out:
+  multi-map targeting (mapDivId) is documented as "supported by every
+  function" but no example shows the exact call shape for functions
+  that don't already take an object (e.g. setVisibleLayers takes two
+  array args, not an object). To stay safe, the main map is the only
+  long-lived map instance - the two comparison maps are torn down and
+  rebuilt fresh on every click, so there's never a moment where an
+  un-scoped call could leak into the wrong map.
 
   Docs:
   - https://api.govmap.gov.il/docs/javascript-functions/create-map
   - https://api.govmap.gov.il/docs/javascript-functions/set-background
   - https://api.govmap.gov.il/docs/javascript-functions/set-visible-layers
-  - https://api.govmap.gov.il/docs/javascript-functions/get-layer-entities
   - https://api.govmap.gov.il/docs/javascript-functions/set-map-marker
   - https://api.govmap.gov.il/docs/javascript-functions/clear-map-marker
   - https://api.govmap.gov.il/docs/intro/attache-a (private layer naming: layer_<ID>)
@@ -429,7 +429,6 @@
 <script>
   const MAIN_MAP_ID = 'map';
   const COMPARE_ZOOM_LEVEL = 9; // 0-10, 10 = tightest/most detail (see zoomToXY docs)
-  const GET_ENTITIES_TIMEOUT_MS = 10000; // see note in refreshPolygonList() - getLayerEntities can hang forever
 
   // One entry per year available on the slider, in chronological order.
   // "base" = that year's raster (aerial photo), "delta" = cumulative
@@ -445,10 +444,14 @@
   // even while hidden) - flattened from YEARS_DATA, base before delta.
   const ALL_LAYERS = YEARS_DATA.flatMap(y => [y.base, y.delta]);
 
+  // Generated by generate_polygon_data.py from delta_*_cum.xlsx - do not hand-edit,
+  // regenerate instead when you add/update a year of delta data.
+  // Keyed by the raster year (matches YEARS_DATA[i].label above).
+  const POLYGON_DATA = {"2024":[{"id":1,"x":210063.4,"y":622431.8},{"id":2,"x":212110.4,"y":622434.1},{"id":3,"x":211244.1,"y":622434.4},{"id":4,"x":211618.4,"y":622431.3},{"id":5,"x":211234.8,"y":621522.1},{"id":6,"x":210915.2,"y":622377.2},{"id":7,"x":210242.4,"y":622283.3},{"id":8,"x":211134.5,"y":621723.4},{"id":9,"x":210728.0,"y":622250.4},{"id":10,"x":210842.2,"y":621576.9},{"id":11,"x":210294.0,"y":622032.1},{"id":12,"x":211267.9,"y":621263.3},{"id":13,"x":210218.5,"y":622007.1},{"id":14,"x":210306.9,"y":622339.1},{"id":15,"x":212169.9,"y":621794.5},{"id":16,"x":211640.9,"y":621822.0},{"id":17,"x":210790.2,"y":622305.4},{"id":18,"x":211638.4,"y":621817.6},{"id":19,"x":211212.1,"y":622187.4},{"id":20,"x":210901.7,"y":622276.5},{"id":21,"x":211298.4,"y":621249.6},{"id":22,"x":210480.5,"y":622107.4},{"id":23,"x":211132.9,"y":621230.5},{"id":24,"x":210926.5,"y":622221.1},{"id":25,"x":210101.9,"y":622101.8},{"id":26,"x":211860.3,"y":621256.3},{"id":27,"x":211371.5,"y":621418.3},{"id":28,"x":212494.7,"y":622096.6},{"id":29,"x":210260.9,"y":621899.7},{"id":30,"x":210121.5,"y":622126.4},{"id":31,"x":212611.0,"y":620833.9},{"id":32,"x":211245.8,"y":621890.2},{"id":33,"x":212715.9,"y":620735.5},{"id":34,"x":211423.2,"y":622061.1},{"id":35,"x":210156.7,"y":622065.5},{"id":36,"x":210389.4,"y":622061.0},{"id":37,"x":210189.1,"y":621889.1},{"id":38,"x":210498.1,"y":622050.2},{"id":39,"x":211299.5,"y":621194.2},{"id":40,"x":211719.2,"y":622031.4},{"id":41,"x":212126.0,"y":621768.7},{"id":42,"x":210494.5,"y":622013.1},{"id":43,"x":211395.3,"y":622001.9},{"id":44,"x":210266.2,"y":621993.8},{"id":45,"x":211769.1,"y":621950.6},{"id":46,"x":211443.8,"y":621950.0},{"id":47,"x":211515.7,"y":621953.4},{"id":48,"x":210311.5,"y":621963.9},{"id":49,"x":211517.4,"y":621928.3},{"id":50,"x":211491.3,"y":621938.8},{"id":51,"x":212060.8,"y":621934.4},{"id":52,"x":211960.8,"y":621927.5},{"id":53,"x":211611.5,"y":621928.2},{"id":54,"x":211413.6,"y":621926.0},{"id":55,"x":211519.3,"y":621098.3},{"id":56,"x":211643.5,"y":621877.5},{"id":57,"x":211614.2,"y":621866.4},{"id":58,"x":211973.1,"y":621875.0},{"id":59,"x":211263.3,"y":621861.6},{"id":60,"x":212001.5,"y":621812.2},{"id":61,"x":210484.3,"y":621805.1},{"id":62,"x":211988.1,"y":621811.0},{"id":63,"x":211756.6,"y":621803.2},{"id":64,"x":212223.9,"y":621772.5},{"id":65,"x":211509.7,"y":621751.9},{"id":66,"x":210646.5,"y":621411.0},{"id":67,"x":211295.1,"y":621520.0},{"id":68,"x":211127.1,"y":621706.4},{"id":69,"x":210828.3,"y":621703.4},{"id":70,"x":210668.4,"y":621662.1},{"id":71,"x":212202.5,"y":621657.2},{"id":72,"x":211952.3,"y":621654.5},{"id":73,"x":211649.3,"y":621642.4},{"id":74,"x":210582.6,"y":621637.0},{"id":75,"x":211612.5,"y":621625.0},{"id":76,"x":210553.7,"y":621619.2},{"id":77,"x":210988.6,"y":621610.4},{"id":78,"x":211802.6,"y":621613.4},{"id":79,"x":211838.5,"y":621599.3},{"id":80,"x":210570.3,"y":621566.9},{"id":81,"x":211193.4,"y":621563.8},{"id":82,"x":210601.6,"y":621562.0},{"id":83,"x":210667.7,"y":621538.8},{"id":84,"x":210921.6,"y":621544.8},{"id":85,"x":211456.5,"y":621538.0},{"id":86,"x":211891.8,"y":621524.5},{"id":87,"x":211152.8,"y":621507.3},{"id":88,"x":211970.2,"y":621496.9},{"id":89,"x":211121.2,"y":621502.4},{"id":90,"x":212029.6,"y":621484.9},{"id":91,"x":210668.0,"y":621483.1},{"id":92,"x":212124.9,"y":621483.3},{"id":93,"x":212132.1,"y":621466.4},{"id":94,"x":210742.4,"y":621470.8},{"id":95,"x":210509.5,"y":621461.7},{"id":96,"x":210504.1,"y":621442.8},{"id":97,"x":210956.5,"y":621432.7},{"id":98,"x":211633.1,"y":621425.7},{"id":99,"x":210534.6,"y":621423.6},{"id":100,"x":210581.4,"y":621420.8},{"id":101,"x":210525.3,"y":621384.7},{"id":102,"x":211713.6,"y":621381.6},{"id":103,"x":211878.3,"y":621261.1},{"id":104,"x":212089.7,"y":621358.9},{"id":105,"x":211556.3,"y":621356.1},{"id":106,"x":210719.2,"y":621324.3},{"id":107,"x":212361.8,"y":621335.7},{"id":108,"x":211155.1,"y":621306.0},{"id":109,"x":212046.0,"y":621323.3},{"id":110,"x":210882.8,"y":621306.8},{"id":111,"x":211715.7,"y":621319.7},{"id":112,"x":211916.4,"y":621249.5},{"id":113,"x":212343.5,"y":621311.1},{"id":114,"x":212278.7,"y":621302.8},{"id":115,"x":211011.9,"y":621300.2},{"id":116,"x":210733.0,"y":621296.9},{"id":117,"x":210644.8,"y":621300.4},{"id":118,"x":210751.0,"y":621294.8},{"id":119,"x":211915.8,"y":621285.5},{"id":120,"x":211079.2,"y":621280.5},{"id":121,"x":211807.7,"y":621265.6},{"id":122,"x":211045.0,"y":621263.9},{"id":123,"x":211980.6,"y":621266.3},{"id":124,"x":211657.7,"y":621261.8},{"id":125,"x":211004.7,"y":621248.2},{"id":126,"x":212024.8,"y":621244.9},{"id":127,"x":211267.4,"y":621235.8},{"id":128,"x":211276.1,"y":621229.7},{"id":129,"x":211250.0,"y":621221.7},{"id":130,"x":212367.3,"y":621220.6},{"id":131,"x":212278.8,"y":621215.1},{"id":132,"x":211836.0,"y":621202.7},{"id":133,"x":211952.5,"y":621191.2},{"id":134,"x":210841.4,"y":621166.2},{"id":135,"x":210578.3,"y":621167.8},{"id":136,"x":211567.3,"y":621147.4},{"id":137,"x":211692.5,"y":621143.7},{"id":138,"x":212160.1,"y":621141.5},{"id":139,"x":212034.6,"y":621137.9},{"id":140,"x":212193.0,"y":621132.8},{"id":141,"x":211552.5,"y":621134.5},{"id":142,"x":211391.4,"y":621132.6},{"id":143,"x":212060.8,"y":621125.0},{"id":144,"x":211407.2,"y":621123.5},{"id":145,"x":211063.2,"y":621126.6},{"id":146,"x":211278.4,"y":621115.8},{"id":147,"x":212053.2,"y":621098.2},{"id":148,"x":212391.5,"y":621090.3},{"id":149,"x":211524.6,"y":621090.3},{"id":150,"x":212226.5,"y":621048.5},{"id":151,"x":211485.3,"y":621081.2},{"id":152,"x":211952.2,"y":621083.6},{"id":153,"x":211396.7,"y":620919.0},{"id":154,"x":212489.1,"y":621075.4},{"id":155,"x":211540.1,"y":621070.0},{"id":156,"x":211282.4,"y":620905.9},{"id":157,"x":212493.6,"y":620864.8},{"id":158,"x":211518.2,"y":621067.3},{"id":159,"x":211504.5,"y":621060.2},{"id":160,"x":210808.6,"y":621058.7},{"id":161,"x":211057.1,"y":621058.0},{"id":162,"x":211523.0,"y":621045.4},{"id":163,"x":210624.4,"y":621040.4},{"id":164,"x":211838.2,"y":620999.6},{"id":165,"x":212574.5,"y":620998.8},{"id":166,"x":211076.9,"y":621007.6},{"id":167,"x":211015.0,"y":621010.0},{"id":168,"x":211434.5,"y":621011.4},{"id":169,"x":210850.7,"y":620997.5},{"id":170,"x":212085.5,"y":620993.6},{"id":171,"x":212444.6,"y":620976.1},{"id":172,"x":211837.3,"y":620985.5},{"id":173,"x":212333.9,"y":620983.2},{"id":174,"x":211697.0,"y":620983.9},{"id":175,"x":211677.4,"y":620976.1},{"id":176,"x":211812.2,"y":620963.3},{"id":177,"x":212323.3,"y":620973.7},{"id":178,"x":211226.8,"y":620959.9},{"id":179,"x":210911.2,"y":620945.0},{"id":180,"x":211804.8,"y":620949.0},{"id":181,"x":210638.9,"y":620937.6},{"id":182,"x":212295.0,"y":620929.4},{"id":183,"x":211768.5,"y":620892.6},{"id":184,"x":212588.0,"y":620880.2},{"id":185,"x":210889.7,"y":620865.3},{"id":186,"x":210766.0,"y":620845.8},{"id":187,"x":210908.2,"y":620844.8},{"id":188,"x":210941.0,"y":620829.0},{"id":189,"x":210518.0,"y":620832.1},{"id":190,"x":211013.3,"y":620825.5},{"id":191,"x":211793.4,"y":620820.5},{"id":192,"x":210516.1,"y":620820.8},{"id":193,"x":211258.3,"y":620815.9},{"id":194,"x":211034.5,"y":620802.1},{"id":195,"x":210721.3,"y":620752.6}],"2025":[{"id":1,"x":211447.0,"y":621815.9},{"id":2,"x":211686.3,"y":621912.0},{"id":3,"x":210890.8,"y":622393.4},{"id":4,"x":210987.4,"y":622251.4},{"id":5,"x":210957.4,"y":622211.2},{"id":6,"x":210171.4,"y":622326.0},{"id":7,"x":210755.1,"y":622039.2},{"id":8,"x":210835.0,"y":621569.2},{"id":9,"x":210415.2,"y":622032.2},{"id":10,"x":211001.5,"y":622204.2},{"id":11,"x":210585.3,"y":621477.8},{"id":12,"x":210624.3,"y":622191.1},{"id":13,"x":210888.3,"y":622173.3},{"id":14,"x":211961.9,"y":622073.0},{"id":15,"x":210769.7,"y":622060.6},{"id":16,"x":210871.8,"y":621999.1},{"id":17,"x":211640.9,"y":621967.6},{"id":18,"x":211765.6,"y":621902.6},{"id":19,"x":211685.9,"y":621813.4},{"id":20,"x":211875.6,"y":621732.5},{"id":21,"x":211619.0,"y":621710.8},{"id":22,"x":210710.6,"y":621306.8},{"id":23,"x":211056.4,"y":621561.0},{"id":24,"x":210469.2,"y":621534.1},{"id":25,"x":211810.2,"y":621487.5},{"id":26,"x":212710.4,"y":620978.6},{"id":27,"x":211250.5,"y":621106.4},{"id":28,"x":211219.7,"y":621025.7},{"id":29,"x":212579.8,"y":621290.1},{"id":30,"x":211087.1,"y":621280.7},{"id":31,"x":210550.8,"y":621247.8},{"id":32,"x":212088.5,"y":621212.3},{"id":33,"x":211090.9,"y":621150.6},{"id":34,"x":210827.0,"y":621065.2},{"id":35,"x":211451.9,"y":621069.7},{"id":36,"x":210926.5,"y":621058.6},{"id":37,"x":211560.7,"y":620997.1},{"id":38,"x":210722.6,"y":620996.6},{"id":39,"x":212705.1,"y":620983.0},{"id":40,"x":212671.3,"y":620658.4},{"id":41,"x":211931.6,"y":620636.3},{"id":42,"x":210579.5,"y":620740.0},{"id":43,"x":210373.6,"y":620621.5}]};
+
   let currentYearIndex = YEARS_DATA.length - 1; // default: most recent year
-  let currentEntities = [];   // polygons fetched for the active delta layer
+  let currentEntities = [];   // POLYGON_DATA entries for the active year: [{id, x, y}, ...]
   let selectedIndex = -1;     // index into currentEntities, -1 = none selected
-  let polygonRequestToken = 0; // bumped on every refreshPolygonList() call; see requestToken usage there
 
   function initGovMap() {
     const initial = YEARS_DATA[currentYearIndex];
@@ -509,103 +512,34 @@
 
   // ---- Polygon list -------------------------------------------------
 
-  function refreshPolygonList() {
-    closeComparison();
-    currentEntities = [];
-    selectedIndex = -1;
-
-    const listEl = document.getElementById('polygonList');
-    listEl.innerHTML = '<p class="placeholder">טוען פוליגונים...</p>';
-
-    const deltaLayer = YEARS_DATA[currentYearIndex].delta;
-    const requestToken = ++polygonRequestToken; // guards against a slow/late response overwriting a newer request
-
-    // getLayerEntities has been observed to hang indefinitely on the
-    // live deployment (no resolve, no reject, no console error - tested
-    // directly against elishago.github.io/map_changes, reproduced even
-    // with a stock public layer name and with the token omitted). Race
-    // it against a timeout so the UI fails visibly instead of being
-    // stuck on "טוען פוליגונים..." forever. If you see the timeout
-    // message below, this is very likely a GovMap-side permission gap
-    // for entity/feature queries (basic map display worked fine in
-    // testing) - worth confirming with GovMap/Mapi support.
-    const request = govmap.getLayerEntities({ layerName: deltaLayer, token: GOVMAP_TOKEN });
-    const timeout = new Promise(function (resolve) {
-      setTimeout(function () { resolve({ __timedOut: true }); }, GET_ENTITIES_TIMEOUT_MS);
-    });
-
-    Promise.race([request, timeout])
-      .then(function (response) {
-        if (requestToken !== polygonRequestToken) return; // a newer request superseded this one
-
-        if (response && response.__timedOut) {
-          listEl.innerHTML = '<p class="placeholder">הבקשה לרשימת הפוליגונים לא נענתה (timeout). ' +
-                              'כדאי לבדוק מול תמיכת GovMap/מפ"י אם יש הרשאה לשליפת ישויות עבור ה-token הזה.</p>';
-          return;
-        }
-
-        // Docs example shows a plain array; guard for a {data: [...]}
-        // shape too in case the live API wraps it.
-        const list = Array.isArray(response) ? response : (response && response.data) || [];
-        currentEntities = list;
-
-        if (!list.length) {
-          listEl.innerHTML = '<p class="placeholder">לא נמצאו פוליגונים בשכבה זו.</p>';
-          return;
-        }
-
-        listEl.innerHTML = list.map(function (entity, i) {
-          return '<button type="button" class="polygon-item" onclick="selectPolygon(' + i + ')">' +
-                 'פוליגון <bdi>#' + escapeHtml(entity.entityID) + '</bdi></button>';
-        }).join('');
-      })
-      .catch(function (err) {
-        if (requestToken !== polygonRequestToken) return;
-        console.error('getLayerEntities failed for ' + deltaLayer, err);
-        listEl.innerHTML = '<p class="placeholder">שגיאה בטעינת רשימת הפוליגונים.</p>';
-      });
-  }
-
   function escapeHtml(value) {
     return String(value).replace(/[&<>"']/g, function (c) {
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
     });
   }
 
-  // Extracts the SHAPE field (WKT-ish text, e.g. "POLYGON ((x y, x y, ...))")
-  // from an entity returned by getLayerEntities.
-  function findShapeValue(entity) {
-    const field = (entity.Fields || []).find(function (f) { return f.FieldName === 'SHAPE'; });
-    return field ? field.Value : null;
-  }
+  // Reads straight from the baked-in POLYGON_DATA (see note at top of
+  // file for why this isn't a live GovMap query) - synchronous, no
+  // loading state needed.
+  function refreshPolygonList() {
+    closeComparison();
+    selectedIndex = -1;
 
-  // Parses that WKT-ish text into a bounding-box center {x, y}. Works
-  // for POINT/POLYGON/MULTIPOLYGON alike since it just pairs up all the
-  // numbers it finds - assumes plain 2D (x y) coordinate pairs, not
-  // (x y z).
-  function shapeCenter(entity) {
-    const wkt = findShapeValue(entity);
-    if (!wkt) return null;
+    const year = YEARS_DATA[currentYearIndex].label;
+    currentEntities = POLYGON_DATA[year] || [];
 
-    const nums = wkt
-      .replace(/[A-Za-z()]/g, ' ')
-      .trim()
-      .split(/[\s,]+/)
-      .filter(function (s) { return s.length > 0; })  // avoid Number('') === 0 sneaking in as a fake coordinate
-      .map(Number)
-      .filter(function (n) { return !isNaN(n); });
+    const listEl = document.getElementById('polygonList');
 
-    if (nums.length < 2) return null;
-
-    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-    for (let i = 0; i + 1 < nums.length; i += 2) {
-      const x = nums[i], y = nums[i + 1];
-      if (x < minX) minX = x;
-      if (x > maxX) maxX = x;
-      if (y < minY) minY = y;
-      if (y > maxY) maxY = y;
+    if (!currentEntities.length) {
+      listEl.innerHTML = '<p class="placeholder">אין נתוני פוליגונים עבור ' + escapeHtml(year) +
+                          ' ב-POLYGON_DATA (הריצו מחדש את generate_polygon_data.py).</p>';
+      return;
     }
-    return { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
+
+    listEl.innerHTML = currentEntities.map(function (entity, i) {
+      return '<button type="button" class="polygon-item" onclick="selectPolygon(' + i + ')">' +
+             'פוליגון <bdi>#' + escapeHtml(entity.id) + '</bdi></button>';
+    }).join('');
   }
 
   // ---- Selection: pin on main map + before/after comparison ---------
@@ -619,11 +553,7 @@
       btn.classList.toggle('active', i === index);
     });
 
-    const center = shapeCenter(entity);
-    if (!center) {
-      console.warn('Could not parse geometry for entity ' + entity.entityID);
-      return;
-    }
+    const center = { x: entity.x, y: entity.y };
 
     // 1) pin on the main map, scoped to it via mapDivId so it doesn't
     //    also land on the comparison maps below (see note at top of file)
@@ -641,7 +571,7 @@
   // to three comparison maps instead of needing new logic.
   function openComparison(entity, center) {
     document.getElementById('comparePanel').hidden = false;
-    document.getElementById('compareTitle').innerHTML = 'השוואת שנים - פוליגון <bdi>#' + escapeHtml(entity.entityID) + '</bdi>';
+    document.getElementById('compareTitle').innerHTML = 'השוואת שנים - פוליגון <bdi>#' + escapeHtml(entity.id) + '</bdi>';
 
     rebuildCompareColumns();
 
