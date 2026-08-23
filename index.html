@@ -242,7 +242,7 @@
   /* Map + polygon list, side by side */
   .map-layout {
     display: grid;
-    grid-template-columns: 1fr 260px;
+    grid-template-columns: 1fr 180px;
     gap: 16px;
     align-items: start;
   }
@@ -535,7 +535,15 @@
       bgButton: true,
       zoomButtons: true,
       showXY: false,
-      identifyOnClick: true,
+
+      // Off on purpose: GovMap's own identify popup ("object details"
+      // window) would otherwise open on every click, which both looks
+      // redundant next to our own pin/selection UI and - going by this
+      // project's earlier getLayerEntities hang against these same
+      // private layers (see note at top of file) - seems to be what
+      // was silently blocking our onClick callback below from ever
+      // firing in production.
+      identifyOnClick: false,
 
       // Clicking a polygon directly on the map selects it exactly like
       // clicking it in the sidebar list (see handleMapClick below).
@@ -544,7 +552,11 @@
       // the same system POLYGON_DATA uses, so no conversion is needed.
       onClick: function (e) {
         const pt = e && e.mapPoint;
-        if (pt) { handleMapClick(pt.x, pt.y); }
+        if (pt) {
+          handleMapClick(pt.x, pt.y);
+        } else {
+          console.warn('main map onClick fired without e.mapPoint', e);
+        }
       },
 
       onLoad: function () {
