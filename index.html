@@ -17,13 +17,17 @@
     delta layer of the year selected on the slider. We show just the
     id in a scrollable list, next to the map (see POLYGON_DATA note
     below for where this data comes from).
-  - Clicking a list item drops a pin on the main map with setMapMarker
-    at that polygon's stored (x, y), and (re)builds two fixed
-    comparison maps below: one always showing the 2024 raster, one
-    always showing the 2025 raster - both centered/zoomed on that
-    polygon - regardless of which year is currently active on the main
-    slider. That's a deliberate, always-both-years comparison, not
-    "year before the slider".
+  - Selecting a polygon - by clicking it in the list, OR by clicking it
+    directly on the main map (see onClick/handleMapClick, which
+    nearest-neighbor-matches a map click's coordinate against
+    POLYGON_DATA) - does three things: (1) drops a pin on the main map
+    with setMapMarker, (2) re-centers the main map on it with zoomToXY
+    without changing its zoom (see MAIN_MAP_LEVEL), and (3) (re)builds
+    the before/after comparison below: right column = the active
+    slider year's raster, left column = the previous year's raster (or
+    an empty placeholder if there isn't one), both zoomed in tight
+    (COMPARE_ZOOM_LEVEL) on that polygon. This is deliberately relative
+    to the slider, not fixed to specific years.
 
   WHY THE POLYGON LIST ISN'T LIVE-QUERIED FROM GOVMAP: tested directly
   against https://elishago.github.io/map_changes/ - background/layers/
@@ -42,18 +46,45 @@
   Regenerate it with generate_polygon_data.py whenever you add/update a
   year of delta data - see that script's docstring. No live GovMap
   entity query happens at all anymore; the list renders from
-  POLYGON_DATA synchronously, and clicking an item just zooms/pins to
+  POLYGON_DATA synchronously, and selecting an item just zooms/pins to
   its stored (x, y) - govmap.zoomToXY / setMapMarker don't care whether
-  those coordinates came from a live query or a baked-in table.
+  those coordinates came from a live query or a baked-in table. A map
+  click's coordinate (see WHAT onClick GIVES YOU below) is matched to
+  the nearest POLYGON_DATA entry within CLICK_RADIUS_M - there's no
+  feature id to cross-reference directly, since getLayerEntities was
+  never usable in the first place.
 
-  One assumption worth knowing, because the docs don't spell it out:
-  multi-map targeting (mapDivId) is documented as "supported by every
-  function" but no example shows the exact call shape for functions
-  that don't already take an object (e.g. setVisibleLayers takes two
-  array args, not an object). To stay safe, the main map is the only
-  long-lived map instance - the two comparison maps are torn down and
-  rebuilt fresh on every click, so there's never a moment where an
-  un-scoped call could leak into the wrong map.
+  WHAT onClick GIVES YOU: not documented beyond "function(e)" in the
+  GovMap docs, so this was confirmed empirically (attach onClick, click
+  the live map, inspect the logged event): e.mapPoint = { x, y,
+  spatialReference: { wkid: 2039 } } (wkid 2039 = ITM, same system
+  POLYGON_DATA uses - no conversion needed) plus e.screenPoint (pixel
+  coordinates, unused here).
+
+  LEVEL vs SCALE: GovMap's docs say level (0-10, "identical to the z
+  parameter in the full portal's URL") tops out at 10, but the full
+  portal's own zoom-in button clearly goes further - confirmed live at
+  www.govmap.gov.il by clicking zoom-in repeatedly and reading its
+  on-screen "1:N" scale readout: z=9 -> 1:8,000, z=10 -> 1:4,000,
+  z=11 -> 1:2,000, z=12 -> 1:1,000, z=13 -> 1:500, z=14 -> 1:250 (each
+  step exactly doubles the scale; fractional z is truncated to the
+  integer, so nothing finer than whole-number steps is possible).
+  Passing level: 14 through the JS API (createMap/zoomToXY) on this
+  embedded map was confirmed - by screenshotting the result - to zoom
+  in exactly as tight as it does on the full portal at the same z, even
+  though 14 is past the documented 0-10 range. COMPARE_ZOOM_LEVEL uses
+  14 as the closest achievable step to the requested ~1:300.
+
+  MULTI-MAP TARGETING (mapDivId): documented as "supported by every
+  function" but no example shows the call shape for functions that
+  don't already take an object (e.g. setVisibleLayers takes two array
+  args, not an object) - so those stay scoped to "whichever map(s)
+  aren't specified" by simply never having more than one map alive when
+  they're called. mapDivId itself IS confirmed working, though:
+  zoomToXY and setMapMarker reliably targeted one specific map (by
+  mapDivId) while other maps were simultaneously live, tested directly
+  against the deployed page - this is what selectPolygon relies on to
+  update the main map without touching the comparison maps.
 
   Docs:
   - https://api.govmap.gov.il/docs/javascript-functions/create-map
@@ -61,6 +92,7 @@
   - https://api.govmap.gov.il/docs/javascript-functions/set-visible-layers
   - https://api.govmap.gov.il/docs/javascript-functions/set-map-marker
   - https://api.govmap.gov.il/docs/javascript-functions/clear-map-marker
+  - https://api.govmap.gov.il/docs/javascript-functions/zoom-to-xy
   - https://api.govmap.gov.il/docs/intro/attache-a (private layer naming: layer_<ID>)
 
   NOTE ON THE TOKEN: GovMap tokens are issued per-domain and only work
@@ -152,16 +184,17 @@
   }
   #map {
     width: 100%;
-    height: 600px;
+    height: 420px;
     border: 1px solid var(--line);
     border-radius: 6px;
   }
   .legend {
     display: flex;
-    gap: 24px;
-    margin-top: 12px;
-    font-size: 0.9rem;
+    gap: 20px;
+    margin: 0 0 14px;
+    font-size: 0.85rem;
     color: var(--muted);
+    flex-wrap: wrap;
   }
   .legend span {
     display: inline-flex;
@@ -220,7 +253,7 @@
     border: 1px solid var(--line);
     border-radius: 6px;
     background: #f9fafb;
-    height: 600px;
+    height: 420px;
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -261,24 +294,19 @@
 
   /* Before/after comparison panel */
   .compare-panel {
-    margin-top: 20px;
+    margin-top: 10px;
     border: 1px solid var(--line);
     border-radius: 6px;
-    padding: 16px;
+    padding: 14px;
     background: #f9fafb;
   }
   .compare-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 12px;
+    margin-bottom: 10px;
   }
-  .compare-header h3 { margin: 0; font-size: 1.05rem; }
-  .compare-note {
-    margin: 0 0 14px;
-    font-size: 0.82rem;
-    color: var(--muted);
-  }
+  .compare-id { margin: 0; font-size: 0.85rem; color: var(--muted); }
   .close-btn {
     border: 1px solid var(--line);
     background: #fff;
@@ -297,9 +325,9 @@
   }
   .compare-map-label {
     margin: 0 0 6px;
-    font-size: 0.85rem;
-    font-weight: 600;
-    color: var(--muted);
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: var(--ink);
     text-align: center;
   }
   .compare-map {
@@ -362,8 +390,9 @@
     <p>
       המפה שלהלן מציגה תצלום אוויר (אורתופוטו) כרקע. הזיזו את המחוון כדי לעבור בין השנים -
       כל שנה מציגה את שכבת המצב הקיים של נחלין יחד עם שכבת השינויים המצטברים (דלתא) המתאימה.
-      ברשימה מימין לצד המפה מופיעים הפוליגונים של שכבת הדלתא הפעילה - לחיצה על פוליגון מסמנת
-      אותו על המפה ופותחת למטה השוואה של תצלומי האוויר: 2024 מול 2025, ממוקדת על הפוליגון שנבחר.
+      ברשימה מימין לצד המפה מופיעים הפוליגונים של שכבת הדלתא הפעילה, ואפשר גם ללחוץ ישירות על
+      פוליגון על המפה עצמה - כל בחירה מסמנת את הפוליגון על המפה ופותחת למטה השוואה בין תצלום
+      האוויר של השנה הפעילה לבין השנה שלפניה (כשקיימת), ממוקדת על הפוליגון שנבחר.
     </p>
 
     <div class="year-slider">
@@ -374,6 +403,12 @@
     <div class="year-ticks">
       <span dir="ltr">2024</span>
       <span dir="ltr">2025</span>
+    </div>
+
+    <div class="legend">
+      <span><i style="background:#9ca3af;"></i> רקע: תצלום אוויר (אורתופוטו)</span>
+      <span><i style="background:#60a5fa;"></i> נחלין - מצב קיים</span>
+      <span><i style="background:#f87171;"></i> דלתא מצטברת (לפי השנה הנבחרת)</span>
     </div>
 
     <div class="map-layout">
@@ -387,20 +422,13 @@
       </aside>
     </div>
 
-    <div class="legend">
-      <span><i style="background:#9ca3af;"></i> רקע: תצלום אוויר (אורתופוטו)</span>
-      <span><i style="background:#60a5fa;"></i> נחלין - מצב קיים</span>
-      <span><i style="background:#f87171;"></i> דלתא מצטברת (לפי השנה הנבחרת)</span>
-    </div>
-
     <div id="comparePanel" class="compare-panel" hidden>
       <div class="compare-header">
-        <h3 id="compareTitle">השוואת שנים</h3>
+        <span id="compareTitle" class="compare-id"></span>
         <button type="button" class="close-btn" onclick="closeComparison()">✕ סגירה</button>
       </div>
-      <p class="compare-note">תצלומי האוויר (רסטר) של שתי השנים, ממוקדים על הפוליגון שנבחר - ללא קשר לשנה הפעילה במחוון למעלה.</p>
       <div class="compare-maps" id="compareMaps">
-        <!-- one column per YEARS_DATA entry, built by JS -->
+        <!-- one column for the active year + one for the previous year (or an empty placeholder), built by JS -->
       </div>
     </div>
   </section>
@@ -428,7 +456,27 @@
 
 <script>
   const MAIN_MAP_ID = 'map';
-  const COMPARE_ZOOM_LEVEL = 9; // 0-10, 10 = tightest/most detail (see zoomToXY docs)
+
+  // Comparison (before/after) mini-maps: GovMap's documented level range
+  // is 0-10, but the underlying engine (same one behind the full
+  // www.govmap.gov.il portal - per the API docs, level "is identical to
+  // the z parameter in the full portal's URL") accepts higher integers
+  // too, confirmed live by driving the full portal's zoom-in button and
+  // reading its on-screen scale readout: z=13 -> 1:500, z=14 -> 1:250.
+  // 14 is the closest achievable step to the requested ~1:300 and reads
+  // as a tight close-up on a single building footprint.
+  const COMPARE_ZOOM_LEVEL = 14;
+
+  // Main map: an explicit, fixed overview level. Needed so that
+  // "re-center on the clicked polygon without changing zoom" (see
+  // selectPolygon) has a stable value to re-apply - GovMap has no
+  // documented center-only pan call, so we always pass this same level
+  // back into zoomToXY, which keeps the net zoom unchanged.
+  const MAIN_MAP_LEVEL = 8; // 0-10 scale, ~1:15,000 - frames the whole settlement
+
+  // Fallback only if POLYGON_DATA ever has no entries to average (should
+  // not happen in practice - see generate_polygon_data.py).
+  const FALLBACK_CENTER = { x: 211447, y: 621816 };
 
   // One entry per year available on the slider, in chronological order.
   // "base" = that year's raster (aerial photo), "delta" = cumulative
@@ -444,6 +492,16 @@
   // even while hidden) - flattened from YEARS_DATA, base before delta.
   const ALL_LAYERS = YEARS_DATA.flatMap(y => [y.base, y.delta]);
 
+  // Plain average of a polygon list's centroids - good enough for an
+  // initial "frame the whole settlement" main-map center, no GIS lib
+  // needed for that.
+  function averageCenter(entities) {
+    if (!entities || !entities.length) return null;
+    let sx = 0, sy = 0;
+    entities.forEach(function (e) { sx += e.x; sy += e.y; });
+    return { x: sx / entities.length, y: sy / entities.length };
+  }
+
   // Generated by generate_polygon_data.py from delta_*_cum.xlsx - do not hand-edit,
   // regenerate instead when you add/update a year of delta data.
   // Keyed by the raster year (matches YEARS_DATA[i].label above).
@@ -455,12 +513,17 @@
 
   function initGovMap() {
     const initial = YEARS_DATA[currentYearIndex];
+    const initialCenter = averageCenter(POLYGON_DATA[initial.label]) || FALLBACK_CENTER;
 
     govmap.createMap(MAIN_MAP_ID, {
       token: GOVMAP_TOKEN,
 
       // Orthophoto background
       background: "1",
+
+      // Fixed overview framing the whole settlement - see MAIN_MAP_LEVEL.
+      center: initialCenter,
+      level: MAIN_MAP_LEVEL,
 
       // Only the current year's pair starts visible; the rest stay
       // registered (via "layers") but off, ready for the slider to
@@ -474,8 +537,17 @@
       showXY: false,
       identifyOnClick: true,
 
+      // Clicking a polygon directly on the map selects it exactly like
+      // clicking it in the sidebar list (see handleMapClick below).
+      // e.mapPoint is GovMap's click payload shape, confirmed live:
+      // { x, y, spatialReference: { wkid: 2039 } } - wkid 2039 is ITM,
+      // the same system POLYGON_DATA uses, so no conversion is needed.
+      onClick: function (e) {
+        const pt = e && e.mapPoint;
+        if (pt) { handleMapClick(pt.x, pt.y); }
+      },
+
       onLoad: function () {
-        console.log('GovMap loaded');
         // Re-assert order/visibility after load as a safety net
         govmap.setVisibleLayers([initial.base, initial.delta]);
         refreshPolygonList();
@@ -559,46 +631,85 @@
     //    also land on the comparison maps below (see note at top of file)
     govmap.setMapMarker({ x: center.x, y: center.y, mapDivId: MAIN_MAP_ID });
 
-    // 2) open the before/after comparison, zoomed to this polygon
+    // 2) re-center the main map on the polygon without changing its
+    //    zoom. GovMap has no documented center-only pan call - zoomToXY
+    //    always sets center AND level together - so we pass the map's
+    //    own fixed overview level right back in, which keeps the net
+    //    zoom unchanged. (A manual zoom the user made via the on-map
+    //    +/- buttons would get reset to MAIN_MAP_LEVEL here - an
+    //    accepted trade-off given the API's constraints.)
+    govmap.zoomToXY({ x: center.x, y: center.y, level: MAIN_MAP_LEVEL, marker: false, mapDivId: MAIN_MAP_ID });
+
+    // 3) open the before/after comparison, zoomed to this polygon
     openComparison(entity, center);
   }
 
-  // Always builds one small map PER YEARS_DATA ENTRY (today: 2024 and
-  // 2025), each showing only that year's RASTER, zoomed/pinned to the
-  // clicked polygon - regardless of which year is active on the main
-  // slider. Today that's exactly "one map = 2024 raster, one map =
-  // 2025 raster"; if a third year is added later this naturally grows
-  // to three comparison maps instead of needing new logic.
+  // Nearest-neighbor match against the active year's polygon list: a map
+  // click's payload only carries a raw coordinate (see initGovMap's
+  // onClick above), not one of our own polygon ids (getLayerEntities was
+  // never usable - see note at top of file - so there's no id to cross-
+  // reference in the first place). CLICK_RADIUS_M is generous enough to
+  // land inside a clicked building's footprint but small enough to
+  // ignore clicks that are clearly on unrelated background.
+  const CLICK_RADIUS_M = 30;
+
+  function handleMapClick(x, y) {
+    if (!currentEntities.length) return;
+
+    let bestIndex = -1;
+    let bestDist = Infinity;
+    currentEntities.forEach(function (entity, i) {
+      const dx = entity.x - x;
+      const dy = entity.y - y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < bestDist) { bestDist = dist; bestIndex = i; }
+    });
+
+    if (bestIndex >= 0 && bestDist <= CLICK_RADIUS_M) {
+      selectPolygon(bestIndex);
+    }
+  }
+
+  // Right column = the active slider year (currentYearIndex); left
+  // column = the year immediately before it in YEARS_DATA, or an empty
+  // placeholder if there isn't one (e.g. the active year is the first
+  // one on record - no older year to compare against). DOM order matters
+  // here: this page is RTL, and under RTL both flex and CSS grid place
+  // the FIRST DOM child in the rightmost cell - so the active year's
+  // column is written first, landing it on the right as requested.
   function openComparison(entity, center) {
     document.getElementById('comparePanel').hidden = false;
-    document.getElementById('compareTitle').innerHTML = 'השוואת שנים - פוליגון <bdi>#' + escapeHtml(entity.id) + '</bdi>';
+    document.getElementById('compareTitle').innerHTML = 'פוליגון <bdi>#' + escapeHtml(entity.id) + '</bdi>';
 
-    rebuildCompareColumns();
+    const container = document.getElementById('compareMaps');
+    const newYear = YEARS_DATA[currentYearIndex];
+    const oldYear = currentYearIndex > 0 ? YEARS_DATA[currentYearIndex - 1] : null;
+
+    container.innerHTML = compareColumnHtml('mapYNew', newYear.label) +
+      (oldYear ? compareColumnHtml('mapYOld', oldYear.label) : emptyCompareColumnHtml());
 
     // GovMap docs: wait for one createMap's init to finish before
     // starting another, so these are chained rather than parallel.
-    let chain = Promise.resolve();
-    YEARS_DATA.forEach(function (yearEntry, i) {
+    let chain = createComparisonMap('mapYNew', newYear, center);
+    if (oldYear) {
       chain = chain.then(function () {
-        return createComparisonMap('mapY' + i, yearEntry, center);
+        return createComparisonMap('mapYOld', oldYear, center);
       });
-    });
+    }
   }
 
-  // Rebuilds #compareMaps from scratch: one label + empty map div per
-  // YEARS_DATA entry. Doing this fresh on every click (rather than
-  // reusing existing map divs) sidesteps relying on undocumented
-  // mapDivId-scoping for functions that don't take an object param
-  // (see note at top of file) - there's never a stale govmap instance
-  // left behind to accidentally target.
-  function rebuildCompareColumns() {
-    const container = document.getElementById('compareMaps');
-    container.innerHTML = YEARS_DATA.map(function (yearEntry, i) {
-      return '<div class="compare-map-col">' +
-             '<p class="compare-map-label" dir="ltr">' + escapeHtml(yearEntry.label) + '</p>' +
-             '<div id="mapY' + i + '" class="compare-map"></div>' +
-             '</div>';
-    }).join('');
+  function compareColumnHtml(divId, label) {
+    return '<div class="compare-map-col">' +
+           '<p class="compare-map-label" dir="ltr">' + escapeHtml(label) + '</p>' +
+           '<div id="' + divId + '" class="compare-map"></div>' +
+           '</div>';
+  }
+
+  function emptyCompareColumnHtml() {
+    return '<div class="compare-map-col">' +
+           '<p class="compare-map-label">&nbsp;</p>' +
+           '<div class="compare-map empty">אין שנה מוקדמת יותר להשוואה</div>' +
+           '</div>';
   }
 
   function createComparisonMap(divId, yearEntry, center) {
