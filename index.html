@@ -682,6 +682,26 @@
     }
   }
 
+  // Tracks whether each comparison slot currently has a LIVE govmap
+  // instance, and if so which year it's showing: null = not created yet,
+  // otherwise a YEARS_DATA label (e.g. "2024"). Reset by closeComparison.
+  //
+  // Earlier, both comparison maps were torn down and recreated with a
+  // fresh govmap.createMap on every single polygon selection. In
+  // practice that turned out to be unreliable two different ways: after
+  // a couple of recreate cycles, clicking the main map would stop
+  // registering at all, and a freshly (re)created map would sometimes
+  // keep showing the OTHER map's imagery until manually zoomed in/out.
+  // Both went away by simply not recreating a map instance that's
+  // already live - see updateCompareSlot.
+  //
+  // NOTE: this assumes a slot's required year label can't change while
+  // its div stays alive, which only holds because YEARS_DATA has
+  // exactly 2 entries today (the slider can only ever make mapYOld
+  // appear/disappear, never need a different year once it exists - see
+  // openComparison). If a 3rd year is ever added, revisit this.
+  const compareMapState = { mapYNew: null, mapYOld: null };
+
   // Right column = the active slider year (currentYearIndex); left
   // column = the year immediately before it in YEARS_DATA, or an empty
   // placeholder if there isn't one (e.g. the active year is the first
@@ -697,15 +717,29 @@
     const newYear = YEARS_DATA[currentYearIndex];
     const oldYear = currentYearIndex > 0 ? YEARS_DATA[currentYearIndex - 1] : null;
 
-    container.innerHTML = compareColumnHtml('mapYNew', newYear.label) +
-      (oldYear ? compareColumnHtml('mapYOld', oldYear.label) : emptyCompareColumnHtml());
+    if (!document.getElementById('mapYNew')) {
+      // First selection since the panel was last closed: build both
+      // columns from scratch.
+      container.innerHTML = compareColumnHtml('mapYNew', newYear.label) +
+        (oldYear ? compareColumnHtml('mapYOld', oldYear.label) : emptyCompareColumnHtml());
+    } else if (!!document.getElementById('mapYOld') !== !!oldYear) {
+      // Only the left slot's existence can change mid-session (slider
+      // crossing the oldest-year boundary) - swap just that column.
+      const oldColEl = container.children[1];
+      if (oldColEl) { oldColEl.remove(); }
+      container.insertAdjacentHTML('beforeend',
+        oldYear ? compareColumnHtml('mapYOld', oldYear.label) : emptyCompareColumnHtml());
+      compareMapState.mapYOld = null;
+    }
 
     // GovMap docs: wait for one createMap's init to finish before
-    // starting another, so these are chained rather than parallel.
-    let chain = createComparisonMap('mapYNew', newYear, center);
+    // starting another - only actually happens the first time a slot's
+    // div is (re)built; once a slot has a live map instance it's just
+    // re-centered in place instead (see updateCompareSlot).
+    let chain = updateCompareSlot('mapYNew', newYear, center);
     if (oldYear) {
       chain = chain.then(function () {
-        return createComparisonMap('mapYOld', oldYear, center);
+        return updateCompareSlot('mapYOld', oldYear, center);
       });
     }
   }
@@ -722,6 +756,33 @@
            '<p class="compare-map-label">&nbsp;</p>' +
            '<div class="compare-map empty">אין שנה מוקדמת יותר להשוואה</div>' +
            '</div>';
+  }
+
+  // Creates a comparison map the first time its slot's div appears;
+  // after that, just re-centers/re-zooms the existing instance in place
+  // (see compareMapState above for why).
+  function updateCompareSlot(divId, yearEntry, center) {
+    if (compareMapState[divId] === null) {
+      return createComparisonMap(divId, yearEntry, center).then(function () {
+        compareMapState[divId] = yearEntry.label;
+        reassertCompareView(divId, center);
+      });
+    }
+    if (compareMapState[divId] !== yearEntry.label) {
+      console.warn('compare slot ' + divId + ' wanted year ' + yearEntry.label +
+                    ' but already shows ' + compareMapState[divId] + ' - not handled past 2 years, see note above');
+    }
+    reassertCompareView(divId, center);
+    return Promise.resolve();
+  }
+
+  // Re-applies center/zoom/marker to an already-live comparison map.
+  // Also called right after a fresh createMap resolves, since a just-
+  // created map has sometimes shown the sibling map's imagery until
+  // nudged - this reproduces what manually zooming in/out was fixing.
+  function reassertCompareView(divId, center) {
+    govmap.zoomToXY({ x: center.x, y: center.y, level: COMPARE_ZOOM_LEVEL, marker: false, mapDivId: divId });
+    govmap.setMapMarker({ x: center.x, y: center.y, mapDivId: divId });
   }
 
   function createComparisonMap(divId, yearEntry, center) {
@@ -755,6 +816,8 @@
       govmap.clearMapMarker({ mapDivId: MAIN_MAP_ID });
     }
     document.getElementById('compareMaps').innerHTML = ''; // drop any live comparison map instances
+    compareMapState.mapYNew = null;
+    compareMapState.mapYOld = null;
     selectedIndex = -1;
     document.querySelectorAll('.polygon-item.active').forEach(function (btn) {
       btn.classList.remove('active');
