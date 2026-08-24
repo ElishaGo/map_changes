@@ -13,10 +13,13 @@
   to turn the previous year's pair off and the target year's pair on.
 
   Polygon list + comparison:
-  - POLYGON_DATA[currentYear] lists every polygon (id, x, y) for the
-    delta layer of the year selected on the slider. We show just the
-    id in a scrollable list, next to the map (see POLYGON_DATA note
-    below for where this data comes from).
+  - POLYGON_DATA[currentYear] lists every polygon (id, x, y, mx, my) for
+    the delta layer of the year selected on the slider. x/y are ITM
+    (EPSG:2039, what the live main map uses); mx/my are the same point
+    pre-projected to Web Mercator (EPSG:3857, meters) - see "STATIC
+    COMPARISON IMAGES" below for why both are kept. We show just the id
+    in a scrollable list, next to the map (see POLYGON_DATA note below
+    for where this data comes from).
   - Selecting a polygon - by clicking it in the list, OR by clicking it
     directly on the main map (see onClick/handleMapClick, which
     nearest-neighbor-matches a map click's coordinate against
@@ -24,10 +27,76 @@
     with setMapMarker, (2) re-centers the main map on it with zoomToXY
     without changing its zoom (see MAIN_MAP_LEVEL), and (3) (re)builds
     the before/after comparison below: right column = the active
-    slider year's raster, left column = the previous year's raster (or
-    an empty placeholder if there isn't one), both zoomed in tight
-    (COMPARE_ZOOM_LEVEL) on that polygon. This is deliberately relative
-    to the slider, not fixed to specific years.
+    slider year's change layer, left column = the previous year's (or
+    an empty placeholder if there isn't one), both rendered as static
+    close-up images centered on that polygon. This is deliberately
+    relative to the slider, not fixed to specific years.
+
+  STATIC COMPARISON IMAGES (why there's no live GovMap map down there
+  any more): the two before/after panels used to be live govmap.createMap
+  iframes, like the main map. That was dropped after two GovMap-side
+  problems turned out to be unfixable from this file:
+
+  1. THE PER-YEAR RASTER ("base") LAYERS DON'T ACTUALLY RENDER, ANYWHERE.
+     Confirmed by calling the exact same WMS request GovMap's own client
+     makes (https://www.govmap.gov.il/api/geoserver/ows, GetMap,
+     LAYERS=govmap:layer_241656 / layer_241661) directly: GeoServer
+     replies with a LayerNotDefined ServiceException, consistently, no
+     matter who asks. The "delta" layers (layer_241657, layer_241662)
+     answer the identical request fine. So the raster year-photo layers
+     are not published correctly on GovMap's backend right now - this
+     was true of the old live comparison maps too (they only ever showed
+     visibleLayers: [yearEntry.base], i.e. a layer that was silently
+     failing to draw the whole time), it's just more visible now that
+     there's no map chrome to hide it behind.
+  2. GOVMAP'S PUBLIC ORTHOPHOTO TILES ARE ORIGIN-LOCKED TO GOVMAP.GOV.IL.
+     https://basemaps.govmap.gov.il/tms/orto2025me_update/{z}/{x}/{y}.jpg
+     is unauthenticated (no token/cookie needed) but tested directly from
+     this site's actual deployed domain (elishago.github.io) - not from
+     govmap.gov.il - and got a flat 401 on every tile, including with
+     referrerpolicy="no-referrer" on the <img> (so it's not simply an
+     easily-spoofed Referer check). No GovMap-hosted background imagery
+     is fetchable from this page at all.
+
+  What DOES work, confirmed live from the deployed elishago.github.io
+  page itself (not just from a govmap.gov.il tab): a plain WMS GetMap
+  request for a delta layer (LAYERS=govmap:layer_<id>, STYLES the same,
+  FORMAT=image/png, TRANSPARENT=TRUE, CRS=EPSG:3857, an arbitrary WIDTH/
+  HEIGHT/BBOX) returns that layer's polygons as a normal cross-origin
+  image - no token, no cookies, no CORS error, loads via a plain <img>
+  (never via fetch(), which WOULD need CORS headers this endpoint may or
+  may not send - <img> sidesteps that question entirely since nothing
+  ever reads pixels back out of the canvas here). renderComparisonImage()
+  draws this on top, for both slots.
+
+  THE BACKGROUND PHOTO: not from GovMap at all. The actual per-year
+  aerial imagery lives on the report owner's own AWS - a CloudFront
+  distribution (d3mbl8vufuvx6n.cloudfront.net) in front of an S3 bucket,
+  as pre-cut standard XYZ tiles (256x256, z/x/y, non-flipped Y - same
+  scheme as GovMap's own tiles, so the mercToTilePixel math below serves
+  both this and the WMS bbox above), one folder per year under
+  minhal_ez_bldg_changes/XYZ_setlment_2/ - see CLOUDFRONT_YEAR_FOLDER for
+  the exact folder names (they don't all match the YEARS_DATA label).
+  Confirmed cross-origin-open from the deployed elishago.github.io page,
+  no auth, no origin restriction (unlike GovMap's own basemap tiles
+  above) - this is presumably also what GovMap's own "base" layers
+  (layer_241656 etc.) point at client-side, which would explain both why
+  those never worked as a GovMap WMS/layer id (see point 1 above) and
+  why they're needed as a separate config here instead of just reusing
+  YEARS_DATA.base.
+
+  COMPARE_TILE_ZOOM is the deepest zoom BOTH years' tile sets actually
+  have imagery at - checked directly against the CloudFront URLs: z16-18
+  return real tiles for both "2024" and "2025_new", z19 returns tiles
+  for "2024" but not "2025_new" (confirmed across a 3x3 tile
+  neighborhood, not just one gap - a genuine max-zoom difference between
+  the two uploads, not a coverage hole), z20+ returns nothing for
+  either. 18 is the highest level both years share, so that's what's
+  used for both, even though "2024" could technically go one level
+  deeper - a consistent resolution across the two comparison panels
+  matters more here than squeezing out 2024's last zoom level.
+  drawBackgroundTiles/renderComparisonImage/COMPARE_* constants further
+  down have the implementation.
 
   WHY THE POLYGON LIST ISN'T LIVE-QUERIED FROM GOVMAP: tested directly
   against https://elishago.github.io/map_changes/ - background/layers/
@@ -68,23 +137,25 @@
   on-screen "1:N" scale readout: z=9 -> 1:8,000, z=10 -> 1:4,000,
   z=11 -> 1:2,000, z=12 -> 1:1,000, z=13 -> 1:500, z=14 -> 1:250 (each
   step exactly doubles the scale; fractional z is truncated to the
-  integer, so nothing finer than whole-number steps is possible).
-  Passing level: 14 through the JS API (createMap/zoomToXY) on this
-  embedded map was confirmed - by screenshotting the result - to zoom
-  in exactly as tight as it does on the full portal at the same z, even
-  though 14 is past the documented 0-10 range. COMPARE_ZOOM_LEVEL uses
-  14 as the closest achievable step to the requested ~1:300.
+  integer, so nothing finer than whole-number steps is possible). This
+  only matters for MAIN_MAP_LEVEL now - the comparison images (see
+  STATIC COMPARISON IMAGES above) don't go through GovMap's level
+  parameter at all any more, they pick their own resolution directly
+  (COMPARE_METERS_PER_PIXEL) since a WMS GetMap call takes an explicit
+  BBOX/WIDTH/HEIGHT instead of a level.
 
   MULTI-MAP TARGETING (mapDivId): documented as "supported by every
   function" but no example shows the call shape for functions that
   don't already take an object (e.g. setVisibleLayers takes two array
   args, not an object) - so those stay scoped to "whichever map(s)
   aren't specified" by simply never having more than one map alive when
-  they're called. mapDivId itself IS confirmed working, though:
-  zoomToXY and setMapMarker reliably targeted one specific map (by
-  mapDivId) while other maps were simultaneously live, tested directly
-  against the deployed page - this is what selectPolygon relies on to
-  update the main map without touching the comparison maps.
+  they're called. mapDivId itself IS confirmed working: zoomToXY and
+  setMapMarker reliably targeted one specific map (by mapDivId) while
+  other maps were simultaneously live, tested directly against the
+  deployed page. Only the main map is a live govmap instance any more
+  (see STATIC COMPARISON IMAGES above), so this no longer matters in
+  practice, but is left here in case a future change brings back a
+  second live map.
 
   Docs:
   - https://api.govmap.gov.il/docs/javascript-functions/create-map
@@ -335,7 +406,24 @@
     height: 320px;
     border: 1px solid var(--line);
     border-radius: 6px;
-    background: #fff;
+    background: #eef1f4;
+    overflow: hidden;
+    position: relative;
+  }
+  .compare-map canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+    object-fit: cover;
+  }
+  .compare-map .compare-loading {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--muted);
+    font-size: 0.85rem;
   }
   .compare-map.empty {
     display: flex;
@@ -457,15 +545,26 @@
 <script>
   const MAIN_MAP_ID = 'map';
 
-  // Comparison (before/after) mini-maps: GovMap's documented level range
-  // is 0-10, but the underlying engine (same one behind the full
-  // www.govmap.gov.il portal - per the API docs, level "is identical to
-  // the z parameter in the full portal's URL") accepts higher integers
-  // too, confirmed live by driving the full portal's zoom-in button and
-  // reading its on-screen scale readout: z=13 -> 1:500, z=14 -> 1:250.
-  // 14 is the closest achievable step to the requested ~1:300 and reads
-  // as a tight close-up on a single building footprint.
-  const COMPARE_ZOOM_LEVEL = 14;
+  // Comparison (before/after) mini-maps: static images now, not live
+  // GovMap maps - see STATIC COMPARISON IMAGES at the top of the file
+  // for why, and for what CLOUDFRONT_TILE_BASE/CLOUDFRONT_YEAR_FOLDER
+  // point at. COMPARE_TILE_ZOOM is a standard slippy-map zoom level (NOT
+  // a GovMap "level") - 18 is the deepest zoom BOTH years' AWS tile sets
+  // actually have imagery at, confirmed directly against the CloudFront
+  // URLs (see top-of-file note for the z19 asymmetry between years).
+  const CLOUDFRONT_TILE_BASE = 'https://d3mbl8vufuvx6n.cloudfront.net/minhal_ez_bldg_changes/XYZ_setlment_2';
+  const CLOUDFRONT_YEAR_FOLDER = { '2024': '2024', '2025': '2025_new' };
+  const COMPARE_TILE_ZOOM = 18;
+  const COMPARE_METERS_PER_PIXEL = 156543.03392804097 / Math.pow(2, COMPARE_TILE_ZOOM); // ~0.597 m/px
+
+  // Comparison image pixel size (canvas backing resolution - CSS then
+  // fits this into the .compare-map box via object-fit: cover, see
+  // <style>). At COMPARE_METERS_PER_PIXEL this frames roughly 380m x
+  // 285m of ground - wider than a single building, since z18 is the
+  // deepest imagery actually available (see COMPARE_TILE_ZOOM above);
+  // still centered tightly on the selected polygon via the marker.
+  const COMPARE_IMG_W = 640;
+  const COMPARE_IMG_H = 480;
 
   // Main map: an explicit, fixed overview level. Needed so that
   // "re-center on the clicked polygon without changing zoom" (see
@@ -483,6 +582,16 @@
   // change VECTOR layer through that year (this is the one we list
   // polygons from). Order within each pair matters for stacking on the
   // main map: base first (bottom), delta second (top).
+  //
+  // NOTE ON "base": as of this writing layer_241656 and layer_241661
+  // (the raster year-photos) don't render anywhere - confirmed via a
+  // direct WMS GetMap request, see STATIC COMPARISON IMAGES at the top
+  // of the file. They're left registered here (main map visibleLayers/
+  // ALL_LAYERS) since GovMap's UI still lists them as valid layer ids
+  // and this may get fixed on GovMap's end without needing a code
+  // change here - but don't expect them to actually draw on the main
+  // map either until that happens. Only "delta" is used by the
+  // comparison images (renderComparisonImage further down).
   const YEARS_DATA = [
     { label: "2024", base: "layer_241661", delta: "layer_241662" }, // Nahalin 2024 raster / delta 2023-2024 cum
     { label: "2025", base: "layer_241656", delta: "layer_241657" }  // Nahalin 2025 raster / delta 2024-2025 cum
@@ -505,7 +614,7 @@
   // Generated by generate_polygon_data.py from delta_*_cum.xlsx - do not hand-edit,
   // regenerate instead when you add/update a year of delta data.
   // Keyed by the raster year (matches YEARS_DATA[i].label above).
-  const POLYGON_DATA = {"2024":[{"id":1,"x":210063.4,"y":622431.8},{"id":2,"x":212110.4,"y":622434.1},{"id":3,"x":211244.1,"y":622434.4},{"id":4,"x":211618.4,"y":622431.3},{"id":5,"x":211234.8,"y":621522.1},{"id":6,"x":210915.2,"y":622377.2},{"id":7,"x":210242.4,"y":622283.3},{"id":8,"x":211134.5,"y":621723.4},{"id":9,"x":210728.0,"y":622250.4},{"id":10,"x":210842.2,"y":621576.9},{"id":11,"x":210294.0,"y":622032.1},{"id":12,"x":211267.9,"y":621263.3},{"id":13,"x":210218.5,"y":622007.1},{"id":14,"x":210306.9,"y":622339.1},{"id":15,"x":212169.9,"y":621794.5},{"id":16,"x":211640.9,"y":621822.0},{"id":17,"x":210790.2,"y":622305.4},{"id":18,"x":211638.4,"y":621817.6},{"id":19,"x":211212.1,"y":622187.4},{"id":20,"x":210901.7,"y":622276.5},{"id":21,"x":211298.4,"y":621249.6},{"id":22,"x":210480.5,"y":622107.4},{"id":23,"x":211132.9,"y":621230.5},{"id":24,"x":210926.5,"y":622221.1},{"id":25,"x":210101.9,"y":622101.8},{"id":26,"x":211860.3,"y":621256.3},{"id":27,"x":211371.5,"y":621418.3},{"id":28,"x":212494.7,"y":622096.6},{"id":29,"x":210260.9,"y":621899.7},{"id":30,"x":210121.5,"y":622126.4},{"id":31,"x":212611.0,"y":620833.9},{"id":32,"x":211245.8,"y":621890.2},{"id":33,"x":212715.9,"y":620735.5},{"id":34,"x":211423.2,"y":622061.1},{"id":35,"x":210156.7,"y":622065.5},{"id":36,"x":210389.4,"y":622061.0},{"id":37,"x":210189.1,"y":621889.1},{"id":38,"x":210498.1,"y":622050.2},{"id":39,"x":211299.5,"y":621194.2},{"id":40,"x":211719.2,"y":622031.4},{"id":41,"x":212126.0,"y":621768.7},{"id":42,"x":210494.5,"y":622013.1},{"id":43,"x":211395.3,"y":622001.9},{"id":44,"x":210266.2,"y":621993.8},{"id":45,"x":211769.1,"y":621950.6},{"id":46,"x":211443.8,"y":621950.0},{"id":47,"x":211515.7,"y":621953.4},{"id":48,"x":210311.5,"y":621963.9},{"id":49,"x":211517.4,"y":621928.3},{"id":50,"x":211491.3,"y":621938.8},{"id":51,"x":212060.8,"y":621934.4},{"id":52,"x":211960.8,"y":621927.5},{"id":53,"x":211611.5,"y":621928.2},{"id":54,"x":211413.6,"y":621926.0},{"id":55,"x":211519.3,"y":621098.3},{"id":56,"x":211643.5,"y":621877.5},{"id":57,"x":211614.2,"y":621866.4},{"id":58,"x":211973.1,"y":621875.0},{"id":59,"x":211263.3,"y":621861.6},{"id":60,"x":212001.5,"y":621812.2},{"id":61,"x":210484.3,"y":621805.1},{"id":62,"x":211988.1,"y":621811.0},{"id":63,"x":211756.6,"y":621803.2},{"id":64,"x":212223.9,"y":621772.5},{"id":65,"x":211509.7,"y":621751.9},{"id":66,"x":210646.5,"y":621411.0},{"id":67,"x":211295.1,"y":621520.0},{"id":68,"x":211127.1,"y":621706.4},{"id":69,"x":210828.3,"y":621703.4},{"id":70,"x":210668.4,"y":621662.1},{"id":71,"x":212202.5,"y":621657.2},{"id":72,"x":211952.3,"y":621654.5},{"id":73,"x":211649.3,"y":621642.4},{"id":74,"x":210582.6,"y":621637.0},{"id":75,"x":211612.5,"y":621625.0},{"id":76,"x":210553.7,"y":621619.2},{"id":77,"x":210988.6,"y":621610.4},{"id":78,"x":211802.6,"y":621613.4},{"id":79,"x":211838.5,"y":621599.3},{"id":80,"x":210570.3,"y":621566.9},{"id":81,"x":211193.4,"y":621563.8},{"id":82,"x":210601.6,"y":621562.0},{"id":83,"x":210667.7,"y":621538.8},{"id":84,"x":210921.6,"y":621544.8},{"id":85,"x":211456.5,"y":621538.0},{"id":86,"x":211891.8,"y":621524.5},{"id":87,"x":211152.8,"y":621507.3},{"id":88,"x":211970.2,"y":621496.9},{"id":89,"x":211121.2,"y":621502.4},{"id":90,"x":212029.6,"y":621484.9},{"id":91,"x":210668.0,"y":621483.1},{"id":92,"x":212124.9,"y":621483.3},{"id":93,"x":212132.1,"y":621466.4},{"id":94,"x":210742.4,"y":621470.8},{"id":95,"x":210509.5,"y":621461.7},{"id":96,"x":210504.1,"y":621442.8},{"id":97,"x":210956.5,"y":621432.7},{"id":98,"x":211633.1,"y":621425.7},{"id":99,"x":210534.6,"y":621423.6},{"id":100,"x":210581.4,"y":621420.8},{"id":101,"x":210525.3,"y":621384.7},{"id":102,"x":211713.6,"y":621381.6},{"id":103,"x":211878.3,"y":621261.1},{"id":104,"x":212089.7,"y":621358.9},{"id":105,"x":211556.3,"y":621356.1},{"id":106,"x":210719.2,"y":621324.3},{"id":107,"x":212361.8,"y":621335.7},{"id":108,"x":211155.1,"y":621306.0},{"id":109,"x":212046.0,"y":621323.3},{"id":110,"x":210882.8,"y":621306.8},{"id":111,"x":211715.7,"y":621319.7},{"id":112,"x":211916.4,"y":621249.5},{"id":113,"x":212343.5,"y":621311.1},{"id":114,"x":212278.7,"y":621302.8},{"id":115,"x":211011.9,"y":621300.2},{"id":116,"x":210733.0,"y":621296.9},{"id":117,"x":210644.8,"y":621300.4},{"id":118,"x":210751.0,"y":621294.8},{"id":119,"x":211915.8,"y":621285.5},{"id":120,"x":211079.2,"y":621280.5},{"id":121,"x":211807.7,"y":621265.6},{"id":122,"x":211045.0,"y":621263.9},{"id":123,"x":211980.6,"y":621266.3},{"id":124,"x":211657.7,"y":621261.8},{"id":125,"x":211004.7,"y":621248.2},{"id":126,"x":212024.8,"y":621244.9},{"id":127,"x":211267.4,"y":621235.8},{"id":128,"x":211276.1,"y":621229.7},{"id":129,"x":211250.0,"y":621221.7},{"id":130,"x":212367.3,"y":621220.6},{"id":131,"x":212278.8,"y":621215.1},{"id":132,"x":211836.0,"y":621202.7},{"id":133,"x":211952.5,"y":621191.2},{"id":134,"x":210841.4,"y":621166.2},{"id":135,"x":210578.3,"y":621167.8},{"id":136,"x":211567.3,"y":621147.4},{"id":137,"x":211692.5,"y":621143.7},{"id":138,"x":212160.1,"y":621141.5},{"id":139,"x":212034.6,"y":621137.9},{"id":140,"x":212193.0,"y":621132.8},{"id":141,"x":211552.5,"y":621134.5},{"id":142,"x":211391.4,"y":621132.6},{"id":143,"x":212060.8,"y":621125.0},{"id":144,"x":211407.2,"y":621123.5},{"id":145,"x":211063.2,"y":621126.6},{"id":146,"x":211278.4,"y":621115.8},{"id":147,"x":212053.2,"y":621098.2},{"id":148,"x":212391.5,"y":621090.3},{"id":149,"x":211524.6,"y":621090.3},{"id":150,"x":212226.5,"y":621048.5},{"id":151,"x":211485.3,"y":621081.2},{"id":152,"x":211952.2,"y":621083.6},{"id":153,"x":211396.7,"y":620919.0},{"id":154,"x":212489.1,"y":621075.4},{"id":155,"x":211540.1,"y":621070.0},{"id":156,"x":211282.4,"y":620905.9},{"id":157,"x":212493.6,"y":620864.8},{"id":158,"x":211518.2,"y":621067.3},{"id":159,"x":211504.5,"y":621060.2},{"id":160,"x":210808.6,"y":621058.7},{"id":161,"x":211057.1,"y":621058.0},{"id":162,"x":211523.0,"y":621045.4},{"id":163,"x":210624.4,"y":621040.4},{"id":164,"x":211838.2,"y":620999.6},{"id":165,"x":212574.5,"y":620998.8},{"id":166,"x":211076.9,"y":621007.6},{"id":167,"x":211015.0,"y":621010.0},{"id":168,"x":211434.5,"y":621011.4},{"id":169,"x":210850.7,"y":620997.5},{"id":170,"x":212085.5,"y":620993.6},{"id":171,"x":212444.6,"y":620976.1},{"id":172,"x":211837.3,"y":620985.5},{"id":173,"x":212333.9,"y":620983.2},{"id":174,"x":211697.0,"y":620983.9},{"id":175,"x":211677.4,"y":620976.1},{"id":176,"x":211812.2,"y":620963.3},{"id":177,"x":212323.3,"y":620973.7},{"id":178,"x":211226.8,"y":620959.9},{"id":179,"x":210911.2,"y":620945.0},{"id":180,"x":211804.8,"y":620949.0},{"id":181,"x":210638.9,"y":620937.6},{"id":182,"x":212295.0,"y":620929.4},{"id":183,"x":211768.5,"y":620892.6},{"id":184,"x":212588.0,"y":620880.2},{"id":185,"x":210889.7,"y":620865.3},{"id":186,"x":210766.0,"y":620845.8},{"id":187,"x":210908.2,"y":620844.8},{"id":188,"x":210941.0,"y":620829.0},{"id":189,"x":210518.0,"y":620832.1},{"id":190,"x":211013.3,"y":620825.5},{"id":191,"x":211793.4,"y":620820.5},{"id":192,"x":210516.1,"y":620820.8},{"id":193,"x":211258.3,"y":620815.9},{"id":194,"x":211034.5,"y":620802.1},{"id":195,"x":210721.3,"y":620752.6}],"2025":[{"id":1,"x":211447.0,"y":621815.9},{"id":2,"x":211686.3,"y":621912.0},{"id":3,"x":210890.8,"y":622393.4},{"id":4,"x":210987.4,"y":622251.4},{"id":5,"x":210957.4,"y":622211.2},{"id":6,"x":210171.4,"y":622326.0},{"id":7,"x":210755.1,"y":622039.2},{"id":8,"x":210835.0,"y":621569.2},{"id":9,"x":210415.2,"y":622032.2},{"id":10,"x":211001.5,"y":622204.2},{"id":11,"x":210585.3,"y":621477.8},{"id":12,"x":210624.3,"y":622191.1},{"id":13,"x":210888.3,"y":622173.3},{"id":14,"x":211961.9,"y":622073.0},{"id":15,"x":210769.7,"y":622060.6},{"id":16,"x":210871.8,"y":621999.1},{"id":17,"x":211640.9,"y":621967.6},{"id":18,"x":211765.6,"y":621902.6},{"id":19,"x":211685.9,"y":621813.4},{"id":20,"x":211875.6,"y":621732.5},{"id":21,"x":211619.0,"y":621710.8},{"id":22,"x":210710.6,"y":621306.8},{"id":23,"x":211056.4,"y":621561.0},{"id":24,"x":210469.2,"y":621534.1},{"id":25,"x":211810.2,"y":621487.5},{"id":26,"x":212710.4,"y":620978.6},{"id":27,"x":211250.5,"y":621106.4},{"id":28,"x":211219.7,"y":621025.7},{"id":29,"x":212579.8,"y":621290.1},{"id":30,"x":211087.1,"y":621280.7},{"id":31,"x":210550.8,"y":621247.8},{"id":32,"x":212088.5,"y":621212.3},{"id":33,"x":211090.9,"y":621150.6},{"id":34,"x":210827.0,"y":621065.2},{"id":35,"x":211451.9,"y":621069.7},{"id":36,"x":210926.5,"y":621058.6},{"id":37,"x":211560.7,"y":620997.1},{"id":38,"x":210722.6,"y":620996.6},{"id":39,"x":212705.1,"y":620983.0},{"id":40,"x":212671.3,"y":620658.4},{"id":41,"x":211931.6,"y":620636.3},{"id":42,"x":210579.5,"y":620740.0},{"id":43,"x":210373.6,"y":620621.5}]};
+  const POLYGON_DATA = {"2024":[{"id":1,"x":210063.4,"y":622431.8,"mx":3907911.46,"my":3723257.35},{"id":2,"x":212110.4,"y":622434.1,"mx":3910314.99,"my":3723262.02},{"id":3,"x":211244.1,"y":622434.4,"mx":3909297.81,"my":3723261.6},{"id":4,"x":211618.4,"y":622431.3,"mx":3909737.3,"my":3723258.29},{"id":5,"x":211234.8,"y":621522.1,"mx":3909287.74,"my":3722185.22},{"id":6,"x":210915.2,"y":622377.2,"mx":3908911.67,"my":3723193.8},{"id":7,"x":210242.4,"y":622283.3,"mx":3908121.79,"my":3723082.33},{"id":8,"x":211134.5,"y":621723.4,"mx":3909169.79,"my":3722422.62},{"id":9,"x":210728.0,"y":622250.4,"mx":3908692.0,"my":3723044.01},{"id":10,"x":210842.2,"y":621576.9,"mx":3908826.74,"my":3722249.49},{"id":11,"x":210294.0,"y":622032.1,"mx":3908182.64,"my":3722786.0},{"id":12,"x":211267.9,"y":621263.3,"mx":3909326.84,"my":3721879.92},{"id":13,"x":210218.5,"y":622007.1,"mx":3908094.02,"my":3722756.42},{"id":14,"x":210306.9,"y":622339.1,"mx":3908197.47,"my":3723148.23},{"id":15,"x":212169.9,"y":621794.5,"mx":3910385.39,"my":3722507.42},{"id":16,"x":211640.9,"y":621822.0,"mx":3909764.26,"my":3722539.41},{"id":17,"x":210790.2,"y":622305.4,"mx":3908764.97,"my":3723108.96},{"id":18,"x":211638.4,"y":621817.6,"mx":3909761.33,"my":3722534.22},{"id":19,"x":211212.1,"y":622187.4,"mx":3909260.46,"my":3722970.14},{"id":20,"x":210901.7,"y":622276.5,"mx":3908895.92,"my":3723074.97},{"id":21,"x":211298.4,"y":621249.6,"mx":3909362.66,"my":3721863.78},{"id":22,"x":210480.5,"y":622107.4,"mx":3908401.54,"my":3722875.03},{"id":23,"x":211132.9,"y":621230.5,"mx":3909168.37,"my":3721841.09},{"id":24,"x":210926.5,"y":622221.1,"mx":3908925.09,"my":3723009.63},{"id":25,"x":210101.9,"y":622101.8,"mx":3907957.02,"my":3722868.03},{"id":26,"x":211860.3,"y":621256.3,"mx":3910022.35,"my":3721872.19},{"id":27,"x":211371.5,"y":621418.3,"mx":3909448.33,"my":3722062.88},{"id":28,"x":212494.7,"y":622096.6,"mx":3910766.5,"my":3722864.12},{"id":29,"x":210260.9,"y":621899.7,"mx":3908143.91,"my":3722629.75},{"id":30,"x":210121.5,"y":622126.4,"mx":3907980.0,"my":3722897.08},{"id":31,"x":212611.0,"y":620833.9,"mx":3910904.03,"my":3721374.48},{"id":32,"x":211245.8,"y":621890.2,"mx":3909300.31,"my":3722619.52},{"id":33,"x":212715.9,"y":620735.5,"mx":3911027.26,"my":3721258.48},{"id":34,"x":211423.2,"y":622061.1,"mx":3909508.44,"my":3722821.32},{"id":35,"x":210156.7,"y":622065.5,"mx":3908021.4,"my":3722825.26},{"id":36,"x":210389.4,"y":622061.0,"mx":3908294.62,"my":3722820.19},{"id":37,"x":210189.1,"y":621889.1,"mx":3908059.62,"my":3722617.17},{"id":38,"x":210498.1,"y":622050.2,"mx":3908422.26,"my":3722807.56},{"id":39,"x":211299.5,"y":621194.2,"mx":3909364.0,"my":3721798.42},{"id":40,"x":211719.2,"y":622031.4,"mx":3909856.01,"my":3722786.54},{"id":41,"x":212126.0,"y":621768.7,"mx":3910333.87,"my":3722476.95},{"id":42,"x":210494.5,"y":622013.1,"mx":3908418.07,"my":3722763.79},{"id":43,"x":211395.3,"y":622001.9,"mx":3909475.74,"my":3722751.45},{"id":44,"x":210266.2,"y":621993.8,"mx":3908150.04,"my":3722740.78},{"id":45,"x":211769.1,"y":621950.6,"mx":3909914.67,"my":3722691.26},{"id":46,"x":211443.8,"y":621950.0,"mx":3909532.73,"my":3722690.26},{"id":47,"x":211515.7,"y":621953.4,"mx":3909617.15,"my":3722694.33},{"id":48,"x":210311.5,"y":621963.9,"mx":3908203.26,"my":3722705.55},{"id":49,"x":211517.4,"y":621928.3,"mx":3909619.16,"my":3722664.72},{"id":50,"x":211491.3,"y":621938.8,"mx":3909588.51,"my":3722677.09},{"id":51,"x":212060.8,"y":621934.4,"mx":3910257.17,"my":3722672.39},{"id":52,"x":211960.8,"y":621927.5,"mx":3910139.77,"my":3722664.17},{"id":53,"x":211611.5,"y":621928.2,"mx":3909729.65,"my":3722664.69},{"id":54,"x":211413.6,"y":621926.0,"mx":3909497.29,"my":3722661.91},{"id":55,"x":211519.3,"y":621098.3,"mx":3909622.14,"my":3721685.49},{"id":56,"x":211643.5,"y":621877.5,"mx":3909767.27,"my":3722604.9},{"id":57,"x":211614.2,"y":621866.4,"mx":3909732.87,"my":3722591.78},{"id":58,"x":211973.1,"y":621875.0,"mx":3910154.25,"my":3722602.24},{"id":59,"x":211263.3,"y":621861.6,"mx":3909320.88,"my":3722585.79},{"id":60,"x":212001.5,"y":621812.2,"mx":3910187.65,"my":3722528.17},{"id":61,"x":210484.3,"y":621805.1,"mx":3908406.31,"my":3722518.37},{"id":62,"x":211988.1,"y":621811.0,"mx":3910171.92,"my":3722526.74},{"id":63,"x":211756.6,"y":621803.2,"mx":3909900.12,"my":3722517.34},{"id":64,"x":212223.9,"y":621772.5,"mx":3910448.81,"my":3722481.51},{"id":65,"x":211509.7,"y":621751.9,"mx":3909610.28,"my":3722456.59},{"id":66,"x":210646.5,"y":621411.0,"mx":3908597.14,"my":3722053.57},{"id":67,"x":211295.1,"y":621520.0,"mx":3909358.54,"my":3722182.79},{"id":68,"x":211127.1,"y":621706.4,"mx":3909161.11,"my":3722402.55},{"id":69,"x":210828.3,"y":621703.4,"mx":3908810.3,"my":3722398.72},{"id":70,"x":210668.4,"y":621662.1,"mx":3908622.6,"my":3722349.84},{"id":71,"x":212202.5,"y":621657.2,"mx":3910423.78,"my":3722345.46},{"id":72,"x":211952.3,"y":621654.5,"mx":3910130.02,"my":3722342.07},{"id":73,"x":211649.3,"y":621642.4,"mx":3909774.28,"my":3722327.53},{"id":74,"x":210582.6,"y":621637.0,"mx":3908521.89,"my":3722320.14},{"id":75,"x":211612.5,"y":621625.0,"mx":3909731.09,"my":3722306.96},{"id":76,"x":210553.7,"y":621619.2,"mx":3908487.98,"my":3722299.11},{"id":77,"x":210988.6,"y":621610.4,"mx":3908998.6,"my":3722289.16},{"id":78,"x":211802.6,"y":621613.4,"mx":3909954.3,"my":3722293.45},{"id":79,"x":211838.5,"y":621599.3,"mx":3909996.46,"my":3722276.84},{"id":80,"x":210570.3,"y":621566.9,"mx":3908507.52,"my":3722237.42},{"id":81,"x":211193.4,"y":621563.8,"mx":3909239.09,"my":3722234.37},{"id":82,"x":210601.6,"y":621562.0,"mx":3908544.27,"my":3722231.67},{"id":83,"x":210667.7,"y":621538.8,"mx":3908621.9,"my":3722204.37},{"id":84,"x":210921.6,"y":621544.8,"mx":3908920.0,"my":3722211.7},{"id":85,"x":211456.5,"y":621538.0,"mx":3909548.01,"my":3722204.18},{"id":86,"x":211891.8,"y":621524.5,"mx":3910059.1,"my":3722188.64},{"id":87,"x":211152.8,"y":621507.3,"mx":3909191.48,"my":3722167.68},{"id":88,"x":211970.2,"y":621496.9,"mx":3910151.17,"my":3722156.14},{"id":89,"x":211121.2,"y":621502.4,"mx":3909154.38,"my":3722161.87},{"id":90,"x":212029.6,"y":621484.9,"mx":3910220.92,"my":3722142.04},{"id":91,"x":210668.0,"y":621483.1,"mx":3908622.31,"my":3722138.65},{"id":92,"x":212124.9,"y":621483.3,"mx":3910332.81,"my":3722140.23},{"id":93,"x":212132.1,"y":621466.4,"mx":3910341.28,"my":3722120.3},{"id":94,"x":210742.4,"y":621470.8,"mx":3908709.67,"my":3722124.22},{"id":95,"x":210509.5,"y":621461.7,"mx":3908436.24,"my":3722113.25},{"id":96,"x":210504.1,"y":621442.8,"mx":3908429.92,"my":3722090.94},{"id":97,"x":210956.5,"y":621432.7,"mx":3908961.08,"my":3722079.48},{"id":98,"x":211633.1,"y":621425.7,"mx":3909755.46,"my":3722071.85},{"id":99,"x":210534.6,"y":621423.6,"mx":3908465.75,"my":3722068.32},{"id":100,"x":210581.4,"y":621420.8,"mx":3908520.7,"my":3722065.07},{"id":101,"x":210525.3,"y":621384.7,"mx":3908454.87,"my":3722022.42},{"id":102,"x":211713.6,"y":621381.6,"mx":3909850.01,"my":3722019.89},{"id":103,"x":211878.3,"y":621261.1,"mx":3910043.48,"my":3721877.87},{"id":104,"x":212089.7,"y":621358.9,"mx":3910291.59,"my":3721993.43},{"id":105,"x":211556.3,"y":621356.1,"mx":3909665.35,"my":3721989.67},{"id":106,"x":210719.2,"y":621324.3,"mx":3908682.58,"my":3721951.35},{"id":107,"x":212361.8,"y":621335.7,"mx":3910611.07,"my":3721966.29},{"id":108,"x":211155.1,"y":621306.0,"mx":3909194.37,"my":3721930.19},{"id":109,"x":212046.0,"y":621323.3,"mx":3910240.31,"my":3721951.4},{"id":110,"x":210882.8,"y":621306.8,"mx":3908874.67,"my":3721930.87},{"id":111,"x":211715.7,"y":621319.7,"mx":3909852.53,"my":3721946.86},{"id":112,"x":211916.4,"y":621249.5,"mx":3910088.22,"my":3721864.22},{"id":113,"x":212343.5,"y":621311.1,"mx":3910589.6,"my":3721937.25},{"id":114,"x":212278.7,"y":621302.8,"mx":3910513.53,"my":3721927.4},{"id":115,"x":211011.9,"y":621300.2,"mx":3909026.25,"my":3721923.21},{"id":116,"x":210733.0,"y":621296.9,"mx":3908698.81,"my":3721919.04},{"id":117,"x":210644.8,"y":621300.4,"mx":3908595.26,"my":3721923.08},{"id":118,"x":210751.0,"y":621294.8,"mx":3908719.95,"my":3721916.58},{"id":119,"x":211915.8,"y":621285.5,"mx":3910087.48,"my":3721906.69},{"id":120,"x":211079.2,"y":621280.5,"mx":3909105.28,"my":3721900.03},{"id":121,"x":211807.7,"y":621265.6,"mx":3909960.59,"my":3721883.12},{"id":122,"x":211045.0,"y":621263.9,"mx":3909065.14,"my":3721880.41},{"id":123,"x":211980.6,"y":621266.3,"mx":3910163.58,"my":3721884.09},{"id":124,"x":211657.7,"y":621261.8,"mx":3909784.48,"my":3721878.5},{"id":125,"x":211004.7,"y":621248.2,"mx":3909017.85,"my":3721861.85},{"id":126,"x":212024.8,"y":621244.9,"mx":3910215.49,"my":3721858.88},{"id":127,"x":211267.4,"y":621235.8,"mx":3909326.28,"my":3721847.47},{"id":128,"x":211276.1,"y":621229.7,"mx":3909336.5,"my":3721840.28},{"id":129,"x":211250.0,"y":621221.7,"mx":3909305.86,"my":3721830.82},{"id":130,"x":212367.3,"y":621220.6,"mx":3910617.62,"my":3721830.5},{"id":131,"x":212278.8,"y":621215.1,"mx":3910513.72,"my":3721823.94},{"id":132,"x":211836.0,"y":621202.7,"mx":3909993.87,"my":3721808.94},{"id":133,"x":211952.5,"y":621191.2,"mx":3910130.65,"my":3721795.47},{"id":134,"x":210841.4,"y":621166.2,"mx":3908826.2,"my":3721764.95},{"id":135,"x":210578.3,"y":621167.8,"mx":3908517.32,"my":3721766.58},{"id":136,"x":211567.3,"y":621147.4,"mx":3909678.45,"my":3721743.46},{"id":137,"x":211692.5,"y":621143.7,"mx":3909825.44,"my":3721739.2},{"id":138,"x":212160.1,"y":621141.5,"mx":3910374.42,"my":3721737.01},{"id":139,"x":212034.6,"y":621137.9,"mx":3910227.08,"my":3721732.66},{"id":140,"x":212193.0,"y":621132.8,"mx":3910413.05,"my":3721726.77},{"id":141,"x":211552.5,"y":621134.5,"mx":3909661.09,"my":3721728.22},{"id":142,"x":211391.4,"y":621132.6,"mx":3909471.95,"my":3721725.84},{"id":143,"x":212060.8,"y":621125.0,"mx":3910257.85,"my":3721717.46},{"id":144,"x":211407.2,"y":621123.5,"mx":3909490.51,"my":3721715.12},{"id":145,"x":211063.2,"y":621126.6,"mx":3909086.64,"my":3721718.45},{"id":146,"x":211278.4,"y":621115.8,"mx":3909339.3,"my":3721705.91},{"id":147,"x":212053.2,"y":621098.2,"mx":3910248.95,"my":3721685.84},{"id":148,"x":212391.5,"y":621090.3,"mx":3910646.13,"my":3721676.79},{"id":149,"x":211524.6,"y":621090.3,"mx":3909628.37,"my":3721676.05},{"id":150,"x":212226.5,"y":621048.5,"mx":3910452.45,"my":3721627.35},{"id":151,"x":211485.3,"y":621081.2,"mx":3909582.24,"my":3721665.28},{"id":152,"x":211952.2,"y":621083.6,"mx":3910130.39,"my":3721668.53},{"id":153,"x":211396.7,"y":620919.0,"mx":3909478.37,"my":3721473.85},{"id":154,"x":212489.1,"y":621075.4,"mx":3910760.73,"my":3721659.29},{"id":155,"x":211540.1,"y":621070.0,"mx":3909646.59,"my":3721652.12},{"id":156,"x":211282.4,"y":620905.9,"mx":3909344.19,"my":3721458.29},{"id":157,"x":212493.6,"y":620864.8,"mx":3910766.18,"my":3721410.85},{"id":158,"x":211518.2,"y":621067.3,"mx":3909620.88,"my":3721648.91},{"id":159,"x":211504.5,"y":621060.2,"mx":3909604.8,"my":3721640.53},{"id":160,"x":210808.6,"y":621058.7,"mx":3908787.8,"my":3721638.1},{"id":161,"x":211057.1,"y":621058.0,"mx":3909079.55,"my":3721637.51},{"id":162,"x":211523.0,"y":621045.4,"mx":3909626.53,"my":3721623.08},{"id":163,"x":210624.4,"y":621040.4,"mx":3908571.57,"my":3721616.32},{"id":164,"x":211838.2,"y":620999.6,"mx":3909996.62,"my":3721569.33},{"id":165,"x":212574.5,"y":620998.8,"mx":3910861.05,"my":3721568.99},{"id":166,"x":211076.9,"y":621007.6,"mx":3909102.84,"my":3721578.07},{"id":167,"x":211015.0,"y":621010.0,"mx":3909030.17,"my":3721580.84},{"id":168,"x":211434.5,"y":621011.4,"mx":3909522.66,"my":3721582.89},{"id":169,"x":210850.7,"y":620997.5,"mx":3908837.29,"my":3721565.94},{"id":170,"x":212085.5,"y":620993.6,"mx":3910286.96,"my":3721562.46},{"id":171,"x":212444.6,"y":620976.1,"mx":3910708.56,"my":3721542.11},{"id":172,"x":211837.3,"y":620985.5,"mx":3909995.58,"my":3721552.69},{"id":173,"x":212333.9,"y":620983.2,"mx":3910578.6,"my":3721550.4},{"id":174,"x":211697.0,"y":620983.9,"mx":3909830.87,"my":3721550.68},{"id":175,"x":211677.4,"y":620976.1,"mx":3909807.86,"my":3721541.46},{"id":176,"x":211812.2,"y":620963.3,"mx":3909966.13,"my":3721526.48},{"id":177,"x":212323.3,"y":620973.7,"mx":3910566.16,"my":3721539.18},{"id":178,"x":211226.8,"y":620959.9,"mx":3909278.87,"my":3721521.94},{"id":179,"x":210911.2,"y":620945.0,"mx":3908908.37,"my":3721504.06},{"id":180,"x":211804.8,"y":620949.0,"mx":3909957.46,"my":3721509.6},{"id":181,"x":210638.9,"y":620937.6,"mx":3908588.69,"my":3721495.06},{"id":182,"x":212295.0,"y":620929.4,"mx":3910532.97,"my":3721486.9},{"id":183,"x":211768.5,"y":620892.6,"mx":3909914.89,"my":3721443.04},{"id":184,"x":212588.0,"y":620880.2,"mx":3910876.99,"my":3721429.09},{"id":185,"x":210889.7,"y":620865.3,"mx":3908883.2,"my":3721410.02},{"id":186,"x":210766.0,"y":620845.8,"mx":3908738.0,"my":3721386.89},{"id":187,"x":210908.2,"y":620844.8,"mx":3908904.94,"my":3721385.85},{"id":188,"x":210941.0,"y":620829.0,"mx":3908943.46,"my":3721367.24},{"id":189,"x":210518.0,"y":620832.1,"mx":3908446.86,"my":3721370.48},{"id":190,"x":211013.3,"y":620825.5,"mx":3909028.35,"my":3721363.18},{"id":191,"x":211793.4,"y":620820.5,"mx":3909944.18,"my":3721358.0},{"id":192,"x":210516.1,"y":620820.8,"mx":3908444.64,"my":3721357.15},{"id":193,"x":211258.3,"y":620815.9,"mx":3909315.98,"my":3721352.09},{"id":194,"x":211034.5,"y":620802.1,"mx":3909053.26,"my":3721335.6},{"id":195,"x":210721.3,"y":620752.6,"mx":3908685.61,"my":3721276.89}],"2025":[{"id":1,"x":211447.0,"y":621815.9,"mx":3909536.61,"my":3722532.04},{"id":2,"x":211686.3,"y":621912.0,"mx":3909817.49,"my":3722645.64},{"id":3,"x":210890.8,"y":622393.4,"mx":3908883.01,"my":3723212.89},{"id":4,"x":210987.4,"y":622251.4,"mx":3908996.57,"my":3723045.44},{"id":5,"x":210957.4,"y":622211.2,"mx":3908961.38,"my":3722997.98},{"id":6,"x":210171.4,"y":622326.0,"mx":3908038.38,"my":3723132.63},{"id":7,"x":210755.1,"y":622039.2,"mx":3908724.02,"my":3722794.84},{"id":8,"x":210835.0,"y":621569.2,"mx":3908818.3,"my":3722240.4},{"id":9,"x":210415.2,"y":622032.2,"mx":3908324.94,"my":3722786.24},{"id":10,"x":211001.5,"y":622204.2,"mx":3909013.17,"my":3722989.76},{"id":11,"x":210585.3,"y":621477.8,"mx":3908525.22,"my":3722132.32},{"id":12,"x":210624.3,"y":622191.1,"mx":3908570.3,"my":3722973.93},{"id":13,"x":210888.3,"y":622173.3,"mx":3908880.29,"my":3722953.19},{"id":14,"x":211961.9,"y":622073.0,"mx":3910140.94,"my":3722835.84},{"id":15,"x":210769.7,"y":622060.6,"mx":3908741.14,"my":3722820.11},{"id":16,"x":210871.8,"y":621999.1,"mx":3908861.08,"my":3722747.65},{"id":17,"x":211640.9,"y":621967.6,"mx":3909764.13,"my":3722711.2},{"id":18,"x":211765.6,"y":621902.6,"mx":3909910.6,"my":3722634.62},{"id":19,"x":211685.9,"y":621813.4,"mx":3909817.1,"my":3722529.31},{"id":20,"x":211875.6,"y":621732.5,"mx":3910039.9,"my":3722434.03},{"id":21,"x":211619.0,"y":621710.8,"mx":3909738.65,"my":3722408.2},{"id":22,"x":210710.6,"y":621306.8,"mx":3908672.5,"my":3721930.7},{"id":23,"x":211056.4,"y":621561.0,"mx":3909078.25,"my":3722230.94},{"id":24,"x":210469.2,"y":621534.1,"mx":3908388.85,"my":3722198.62},{"id":25,"x":211810.2,"y":621487.5,"mx":3909963.33,"my":3722144.91},{"id":26,"x":212710.4,"y":620978.6,"mx":3911020.61,"my":3721545.27},{"id":27,"x":211250.5,"y":621106.4,"mx":3909306.56,"my":3721694.8},{"id":28,"x":211219.7,"y":621025.7,"mx":3909270.47,"my":3721599.56},{"id":29,"x":212579.8,"y":621290.1,"mx":3910867.05,"my":3721912.66},{"id":30,"x":211087.1,"y":621280.7,"mx":3909114.56,"my":3721900.27},{"id":31,"x":210550.8,"y":621247.8,"mx":3908484.95,"my":3721860.93},{"id":32,"x":212088.5,"y":621212.3,"mx":3910290.3,"my":3721820.48},{"id":33,"x":211090.9,"y":621150.6,"mx":3909119.14,"my":3721746.79},{"id":34,"x":210827.0,"y":621065.2,"mx":3908809.4,"my":3721645.78},{"id":35,"x":211451.9,"y":621069.7,"mx":3909543.04,"my":3721651.69},{"id":36,"x":210926.5,"y":621058.6,"mx":3908926.22,"my":3721638.09},{"id":37,"x":211560.7,"y":620997.1,"mx":3909670.84,"my":3721566.13},{"id":38,"x":210722.6,"y":620996.6,"mx":3908686.9,"my":3721564.75},{"id":39,"x":212705.1,"y":620983.0,"mx":3911014.39,"my":3721550.45},{"id":40,"x":212671.3,"y":620658.4,"mx":3910974.96,"my":3721167.49},{"id":41,"x":211931.6,"y":620636.3,"mx":3910106.59,"my":3721140.82},{"id":42,"x":210579.5,"y":620740.0,"mx":3908519.15,"my":3721261.89},{"id":43,"x":210373.6,"y":620621.5,"mx":3908277.55,"my":3721121.88}]};
 
   let currentYearIndex = YEARS_DATA.length - 1; // default: most recent year
   let currentEntities = [];   // POLYGON_DATA entries for the active year: [{id, x, y}, ...]
@@ -639,8 +748,9 @@
 
     const center = { x: entity.x, y: entity.y };
 
-    // 1) pin on the main map, scoped to it via mapDivId so it doesn't
-    //    also land on the comparison maps below (see note at top of file)
+    // 1) pin on the main map, scoped to it via mapDivId (still relevant:
+    //    the main map is the only live govmap instance left, see STATIC
+    //    COMPARISON IMAGES at the top of the file)
     govmap.setMapMarker({ x: center.x, y: center.y, mapDivId: MAIN_MAP_ID });
 
     // 2) re-center the main map on the polygon without changing its
@@ -652,8 +762,9 @@
     //    accepted trade-off given the API's constraints.)
     govmap.zoomToXY({ x: center.x, y: center.y, level: MAIN_MAP_LEVEL, marker: false, mapDivId: MAIN_MAP_ID });
 
-    // 3) open the before/after comparison, zoomed to this polygon
-    openComparison(entity, center);
+    // 3) open the before/after comparison (static images, uses
+    //    entity.mx/entity.my - see openComparison)
+    openComparison(entity);
   }
 
   // Nearest-neighbor match against the active year's polygon list: a map
@@ -682,25 +793,176 @@
     }
   }
 
-  // Tracks whether each comparison slot currently has a LIVE govmap
-  // instance, and if so which year it's showing: null = not created yet,
-  // otherwise a YEARS_DATA label (e.g. "2024"). Reset by closeComparison.
-  //
-  // Earlier, both comparison maps were torn down and recreated with a
-  // fresh govmap.createMap on every single polygon selection. In
-  // practice that turned out to be unreliable two different ways: after
-  // a couple of recreate cycles, clicking the main map would stop
-  // registering at all, and a freshly (re)created map would sometimes
-  // keep showing the OTHER map's imagery until manually zoomed in/out.
-  // Both went away by simply not recreating a map instance that's
-  // already live - see updateCompareSlot.
-  //
-  // NOTE: this assumes a slot's required year label can't change while
-  // its div stays alive, which only holds because YEARS_DATA has
-  // exactly 2 entries today (the slider can only ever make mapYOld
-  // appear/disappear, never need a different year once it exists - see
-  // openComparison). If a 3rd year is ever added, revisit this.
-  const compareMapState = { mapYNew: null, mapYOld: null };
+  // ---- Comparison images (static, not live GovMap maps) -------------
+  // See STATIC COMPARISON IMAGES at the top of the file for the full
+  // story on why this isn't govmap.createMap any more. Two independent
+  // pieces, composited onto one canvas per slot (background first, then
+  // overlay, then the marker - see renderComparisonImage):
+  //  - background: the real per-year aerial photo, stitched together
+  //    from XYZ tiles hosted on the report owner's own AWS (CloudFront +
+  //    S3) - see CLOUDFRONT_TILE_BASE/CLOUDFRONT_YEAR_FOLDER above and
+  //    drawBackgroundTiles below.
+  //  - overlay: that year's delta (change) polygons, as a single WMS
+  //    GetMap image straight from GovMap - see buildDeltaOverlayUrl.
+
+  function loadImage(url) {
+    return new Promise(function (resolve) {
+      const img = new Image();
+      // Deliberately NOT setting img.crossOrigin: these govmap.gov.il
+      // URLs are third-party and of unknown CORS support, and this
+      // image is only ever drawn to a canvas that's displayed on
+      // screen, never read back (no toDataURL/getImageData/toBlob) - so
+      // a "tainted" canvas is harmless here. Setting crossOrigin would
+      // instead make the browser demand CORS headers just to load the
+      // image at all, and fail it outright if the server doesn't send
+      // them.
+      img.onload = function () { resolve(img); };
+      img.onerror = function () { resolve(null); };
+      img.src = url;
+    });
+  }
+
+  // Builds a WMS GetMap URL for one delta layer, cropped to exactly
+  // COMPARE_IMG_W x COMPARE_IMG_H centered on (mx, my) at
+  // COMPARE_METERS_PER_PIXEL resolution. Confirmed working with no
+  // token and no cookies, tested directly from the deployed
+  // elishago.github.io page (not just from a govmap.gov.il tab).
+  function buildDeltaOverlayUrl(layerId, mx, my) {
+    const halfWm = (COMPARE_IMG_W / 2) * COMPARE_METERS_PER_PIXEL;
+    const halfHm = (COMPARE_IMG_H / 2) * COMPARE_METERS_PER_PIXEL;
+    const bbox = [mx - halfWm, my - halfHm, mx + halfWm, my + halfHm].join(',');
+    const params = new URLSearchParams({
+      service: 'WMS', version: '1.3.0', REQUEST: 'GetMap', FORMAT: 'image/png',
+      STYLES: 'govmap:' + layerId, TRANSPARENT: 'TRUE', LAYERS: 'govmap:' + layerId,
+      CRS: 'EPSG:3857', WIDTH: String(COMPARE_IMG_W), HEIGHT: String(COMPARE_IMG_H), BBOX: bbox
+    });
+    return 'https://www.govmap.gov.il/api/geoserver/ows?' + params.toString();
+  }
+
+  // Web Mercator (EPSG:3857) tile math - half the world's width in
+  // meters, and standard 256px XYZ tiles. Used to turn a (mx, my) point
+  // into "which tiles cover this view, and where do they land in the
+  // output canvas" for drawBackgroundTiles below. Verified against real
+  // tile numbers GovMap's own client requested for this exact area
+  // (z15 x=19580 y=13340) before ever being used against the AWS tiles -
+  // same standard scheme, non-flipped y (i.e. NOT the "TMS" y-flip its
+  // URL path name might suggest).
+  const WORLD_HALF = 20037508.342789244;
+  const TILE_SIZE = 256;
+
+  function mercToTilePixel(mx, my, z) {
+    const n = TILE_SIZE * Math.pow(2, z);
+    return {
+      px: (mx + WORLD_HALF) / (2 * WORLD_HALF) * n,
+      py: (WORLD_HALF - my) / (2 * WORLD_HALF) * n
+    };
+  }
+
+  // Stitches however many COMPARE_TILE_ZOOM tiles are needed to fill
+  // (outW, outH) centered on (centerMx, centerMy), drawing each into ctx
+  // at its correct offset. yearFolder comes from CLOUDFRONT_YEAR_FOLDER
+  // - see STATIC COMPARISON IMAGES at the top of the file for what this
+  // AWS source is and why it exists alongside the GovMap WMS overlay.
+  // A missing/failed tile (edge of coverage) just leaves that patch of
+  // canvas showing whatever was drawn before it (the neutral fill) -
+  // never blocks the rest.
+  async function drawBackgroundTiles(ctx, yearFolder, centerMx, centerMy, outW, outH) {
+    const z = COMPARE_TILE_ZOOM;
+    const halfWm = (outW / 2) * COMPARE_METERS_PER_PIXEL;
+    const halfHm = (outH / 2) * COMPARE_METERS_PER_PIXEL;
+    const topLeft = mercToTilePixel(centerMx - halfWm, centerMy + halfHm, z);
+    const bottomRight = mercToTilePixel(centerMx + halfWm, centerMy - halfHm, z);
+
+    const txStart = Math.floor(topLeft.px / TILE_SIZE);
+    const txEnd = Math.floor(bottomRight.px / TILE_SIZE);
+    const tyStart = Math.floor(topLeft.py / TILE_SIZE);
+    const tyEnd = Math.floor(bottomRight.py / TILE_SIZE);
+
+    const jobs = [];
+    for (let tx = txStart; tx <= txEnd; tx++) {
+      for (let ty = tyStart; ty <= tyEnd; ty++) {
+        const url = CLOUDFRONT_TILE_BASE + '/' + yearFolder + '/' + z + '/' + tx + '/' + ty + '.png';
+        const destX = tx * TILE_SIZE - topLeft.px;
+        const destY = ty * TILE_SIZE - topLeft.py;
+        jobs.push(loadImage(url).then(function (img) {
+          if (img) ctx.drawImage(img, destX, destY);
+        }));
+      }
+    }
+    await Promise.all(jobs);
+  }
+
+  // Draws one comparison slot into its div: neutral fill, the year's
+  // aerial photo (drawBackgroundTiles) once it's stitched together, the
+  // year's delta polygons on top of that if the overlay image loads,
+  // then a small marker at the exact selected-polygon center
+  // (entity.mx/entity.my - the Web Mercator twin of entity.x/entity.y,
+  // baked into POLYGON_DATA - see generate_polygon_data.py). Never
+  // throws - a failed image load (background or overlay) just leaves
+  // that layer undrawn, so one bad request can't block the rest of this
+  // slot or the other slot.
+  async function renderComparisonImage(divId, yearEntry, entity) {
+    const wrap = document.getElementById(divId);
+    if (!wrap) return; // slot may have been replaced/removed by a later click - nothing to do
+
+    const canvas = document.createElement('canvas');
+    canvas.width = COMPARE_IMG_W;
+    canvas.height = COMPARE_IMG_H;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#eef1f4';
+    ctx.fillRect(0, 0, COMPARE_IMG_W, COMPARE_IMG_H);
+
+    // Background first (drawn tile-by-tile as each one resolves), so
+    // the overlay and marker always end up on top of it.
+    const yearFolder = CLOUDFRONT_YEAR_FOLDER[yearEntry.label];
+    if (yearFolder) {
+      await drawBackgroundTiles(ctx, yearFolder, entity.mx, entity.my, COMPARE_IMG_W, COMPARE_IMG_H);
+    }
+
+    // See isConnected note further down - checked again after each
+    // await, since either fetch can take long enough for the slot to
+    // have been torn down or replaced in the meantime.
+    if (!wrap.isConnected) return;
+
+    const overlayImg = await loadImage(buildDeltaOverlayUrl(yearEntry.delta, entity.mx, entity.my));
+
+    // The slot may have been torn down (panel closed) or replaced by a
+    // NEW div with the same id (another polygon clicked before this
+    // image finished loading) while the fetch above was in flight.
+    // document.getElementById(divId) would find that new div and look
+    // "still there" even though wrap itself is stale - isConnected is
+    // what actually distinguishes "this exact node is still the one in
+    // the document" from "a node with this id exists again".
+    if (!wrap.isConnected) return;
+
+    if (overlayImg) {
+      ctx.drawImage(overlayImg, 0, 0, COMPARE_IMG_W, COMPARE_IMG_H);
+    }
+
+    // Marker at dead center = the selected polygon's centroid.
+    const cx = COMPARE_IMG_W / 2, cy = COMPARE_IMG_H / 2;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 9, 0, 2 * Math.PI);
+    ctx.fillStyle = 'rgba(37, 99, 235, 0.25)';
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(cx, cy, 5, 0, 2 * Math.PI);
+    ctx.fillStyle = '#2563eb';
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#ffffff';
+    ctx.stroke();
+
+    wrap.innerHTML = '';
+    wrap.appendChild(canvas);
+
+    if (!overlayImg) {
+      const note = document.createElement('div');
+      note.className = 'compare-loading';
+      note.textContent = 'שכבת השינויים לא נטענה';
+      wrap.appendChild(note);
+    }
+  }
 
   // Right column = the active slider year (currentYearIndex); left
   // column = the year immediately before it in YEARS_DATA, or an empty
@@ -709,7 +971,13 @@
   // here: this page is RTL, and under RTL both flex and CSS grid place
   // the FIRST DOM child in the rightmost cell - so the active year's
   // column is written first, landing it on the right as requested.
-  function openComparison(entity, center) {
+  //
+  // Rebuilds both columns from scratch on every call, and fires both
+  // image loads without waiting for one before starting the other -
+  // unlike the old live-map version, there's no GovMap createMap
+  // lifecycle here to protect by reusing instances or sequencing loads,
+  // just two independent image fetches.
+  function openComparison(entity) {
     document.getElementById('comparePanel').hidden = false;
     document.getElementById('compareTitle').innerHTML = 'פוליגון <bdi>#' + escapeHtml(entity.id) + '</bdi>';
 
@@ -717,37 +985,19 @@
     const newYear = YEARS_DATA[currentYearIndex];
     const oldYear = currentYearIndex > 0 ? YEARS_DATA[currentYearIndex - 1] : null;
 
-    if (!document.getElementById('mapYNew')) {
-      // First selection since the panel was last closed: build both
-      // columns from scratch.
-      container.innerHTML = compareColumnHtml('mapYNew', newYear.label) +
-        (oldYear ? compareColumnHtml('mapYOld', oldYear.label) : emptyCompareColumnHtml());
-    } else if (!!document.getElementById('mapYOld') !== !!oldYear) {
-      // Only the left slot's existence can change mid-session (slider
-      // crossing the oldest-year boundary) - swap just that column.
-      const oldColEl = container.children[1];
-      if (oldColEl) { oldColEl.remove(); }
-      container.insertAdjacentHTML('beforeend',
-        oldYear ? compareColumnHtml('mapYOld', oldYear.label) : emptyCompareColumnHtml());
-      compareMapState.mapYOld = null;
-    }
+    container.innerHTML = compareColumnHtml('mapYNew', newYear.label) +
+      (oldYear ? compareColumnHtml('mapYOld', oldYear.label) : emptyCompareColumnHtml());
 
-    // GovMap docs: wait for one createMap's init to finish before
-    // starting another - only actually happens the first time a slot's
-    // div is (re)built; once a slot has a live map instance it's just
-    // re-centered in place instead (see updateCompareSlot).
-    let chain = updateCompareSlot('mapYNew', newYear, center);
+    renderComparisonImage('mapYNew', newYear, entity);
     if (oldYear) {
-      chain = chain.then(function () {
-        return updateCompareSlot('mapYOld', oldYear, center);
-      });
+      renderComparisonImage('mapYOld', oldYear, entity);
     }
   }
 
   function compareColumnHtml(divId, label) {
     return '<div class="compare-map-col">' +
            '<p class="compare-map-label" dir="ltr">' + escapeHtml(label) + '</p>' +
-           '<div id="' + divId + '" class="compare-map"></div>' +
+           '<div id="' + divId + '" class="compare-map"><div class="compare-loading">טוען...</div></div>' +
            '</div>';
   }
 
@@ -758,66 +1008,12 @@
            '</div>';
   }
 
-  // Creates a comparison map the first time its slot's div appears;
-  // after that, just re-centers/re-zooms the existing instance in place
-  // (see compareMapState above for why).
-  function updateCompareSlot(divId, yearEntry, center) {
-    if (compareMapState[divId] === null) {
-      return createComparisonMap(divId, yearEntry, center).then(function () {
-        compareMapState[divId] = yearEntry.label;
-        reassertCompareView(divId, center);
-      });
-    }
-    if (compareMapState[divId] !== yearEntry.label) {
-      console.warn('compare slot ' + divId + ' wanted year ' + yearEntry.label +
-                    ' but already shows ' + compareMapState[divId] + ' - not handled past 2 years, see note above');
-    }
-    reassertCompareView(divId, center);
-    return Promise.resolve();
-  }
-
-  // Re-applies center/zoom/marker to an already-live comparison map.
-  // Also called right after a fresh createMap resolves, since a just-
-  // created map has sometimes shown the sibling map's imagery until
-  // nudged - this reproduces what manually zooming in/out was fixing.
-  function reassertCompareView(divId, center) {
-    govmap.zoomToXY({ x: center.x, y: center.y, level: COMPARE_ZOOM_LEVEL, marker: false, mapDivId: divId });
-    govmap.setMapMarker({ x: center.x, y: center.y, mapDivId: divId });
-  }
-
-  function createComparisonMap(divId, yearEntry, center) {
-    return new Promise(function (resolve) {
-      govmap.createMap(divId, {
-        token: GOVMAP_TOKEN,
-        background: "1",
-        visibleLayers: [yearEntry.base],  // raster only - no delta overlay on these
-        layers: [yearEntry.base],
-        center: center,
-        level: COMPARE_ZOOM_LEVEL,
-        setMapMarker: true,   // drop a pin at map center (= the polygon) after load
-        bgButton: false,
-        zoomButtons: false,
-        showXY: false,
-        identifyOnClick: false,
-        layersMode: 4,        // hide the layers button on these small maps
-
-        onLoad: function () { resolve(); },
-        onError: function (e) {
-          console.error('GovMap comparison map error (' + divId + ')', e);
-          resolve(); // don't block the chain on one map failing
-        }
-      });
-    });
-  }
-
   function closeComparison() {
     document.getElementById('comparePanel').hidden = true;
     if (window.govmap) {
       govmap.clearMapMarker({ mapDivId: MAIN_MAP_ID });
     }
-    document.getElementById('compareMaps').innerHTML = ''; // drop any live comparison map instances
-    compareMapState.mapYNew = null;
-    compareMapState.mapYOld = null;
+    document.getElementById('compareMaps').innerHTML = ''; // drop the comparison canvases (any in-flight image loads just no-op when they resolve, see renderComparisonImage)
     selectedIndex = -1;
     document.querySelectorAll('.polygon-item.active').forEach(function (btn) {
       btn.classList.remove('active');
