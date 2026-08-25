@@ -411,11 +411,16 @@
 <main>
 
   <section id="visualization">
-    <h2 id="areaHeading">בחרי אזור על המפה</h2>
+    <h2 id="areaHeading">בחרי אזור</h2>
     <p id="areaSelectHint">
-      המפה שלהלן מציגה את אזורי הפיילוט מתוארים. לחצי על אחד מהם כדי לצפות בבניינים
-      החדשים שאותרו בו, לפי תקופת השוואה.
+      בחרי אזור מהכפתורים למטה כדי לצפות בבניינים החדשים שאותרו בו, לפי תקופת השוואה.
     </p>
+
+    <div id="areaButtons" class="area-buttons">
+      <button type="button" class="area-btn" onclick="selectArea('נאחלין')">אזור 1</button>
+      <button type="button" class="area-btn" onclick="selectArea('עקרבא')">אזור 2</button>
+      <button type="button" class="area-btn" onclick="selectArea('עזון עתמה')">אזור 3</button>
+    </div>
 
     <p>
       בתוך אזור - הזיזו את המחוון כדי לעבור בין תקופות ההשוואה (כשיש יותר מאחת) - כל תקופה
@@ -447,7 +452,9 @@
     </div>
 
     <div class="map-layout">
-      <div id="map"></div>
+      <div id="map" style="position: relative;">
+        <img id="deltaOverlay" style="position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; display: none;" alt="" />
+      </div>
 
       <aside class="polygon-panel">
         <h3>איתורים בתקופה הנבחרת</h3>
@@ -624,7 +631,7 @@
       background: "1",
       center: combinedBounds(),
       level: AREAS_OVERVIEW_LEVEL,
-      visibleLayers: [AREAS_LAYER],
+      visibleLayers: [],
       layers: ALL_LAYERS,
       layersMode: 2,
       bgButton: true,
@@ -634,24 +641,60 @@
       onClick: function (e) {
         const pt = e && e.mapPoint;
         if (!pt) { console.warn('main map onClick fired without e.mapPoint', e); return; }
-        if (currentArea === null) {
-          const hit = findAreaAtPoint(pt.x, pt.y);
-          if (hit) selectArea(hit);
-        } else {
+        if (currentArea !== null) {
           handleMapClick(pt.x, pt.y);
         }
       },
       onLoad: function () {
-        try {
-          govmap.setVisibleLayers([AREAS_LAYER], []);
-        } catch (err) {
-          console.error('GovMap setVisibleLayers failed in onLoad:', err);
-        }
+        // Area selection happens via the buttons (#areaButtons), and
+        // building markers via the WMS overlay image (updateMapOverlay)
+        // - neither depends on native GovMap layer visibility, which
+        // requires the layer be shared to this specific account.
       },
       onError: function (e) {
         console.error('GovMap error', e);
       }
     });
+  }
+
+  // Main-map buildings overlay: instead of relying on GovMap's native
+  // layer visibility (which turned out to require the layer be shared
+  // to this specific account - see chat), the building markers on the
+  // main map are drawn the same way the comparison images already work:
+  // a plain WMS GetMap image request, positioned as an absolutely-
+  // positioned <img> over #map. AREA_OVERLAY_METERS_PER_PIXEL is a
+  // rough "whole settlement" scale - tune if it doesn't visually match
+  // MAIN_MAP_LEVEL's actual framing once checked live.
+  const AREA_OVERLAY_METERS_PER_PIXEL = 5;
+
+  function areaCenterMerc(areaKey, periodLabel) {
+    const byPeriod = POLYGON_DATA[areaKey] && POLYGON_DATA[areaKey][periodLabel];
+    const all = (byPeriod && byPeriod.length) ? byPeriod :
+      Object.values(POLYGON_DATA[areaKey] || {}).flat();
+    if (!all.length) return null;
+    let sx = 0, sy = 0;
+    all.forEach(function (e) { sx += e.mx; sy += e.my; });
+    return { mx: sx / all.length, my: sy / all.length };
+  }
+
+  function updateMapOverlay() {
+    const img = document.getElementById('deltaOverlay');
+    if (!currentArea) { img.style.display = 'none'; return; }
+
+    const config = AREA_CONFIG[currentArea];
+    const label = config.periods[currentPeriodIndex];
+    const meta = periodMeta(label);
+    const center = areaCenterMerc(currentArea, label);
+    if (!center) { img.style.display = 'none'; return; }
+
+    const mapEl = document.getElementById(MAIN_MAP_ID);
+    const w = mapEl.clientWidth || 640;
+    const h = mapEl.clientHeight || 420;
+
+    img.src = buildDeltaOverlayUrl(DELTA_LAYER, center.mx, center.my, meta.diffDate, {
+      width: w, height: h, metersPerPixel: AREA_OVERLAY_METERS_PER_PIXEL
+    });
+    img.style.display = 'block';
   }
 
   function selectArea(areaKey) {
@@ -663,6 +706,7 @@
 
     document.getElementById('areaHeading').textContent = config.displayName;
     document.getElementById('areaSelectHint').hidden = true;
+    document.getElementById('areaButtons').hidden = true;
     document.getElementById('backToAreasBtn').hidden = false;
     document.getElementById('visualizationBody').hidden = false;
 
@@ -688,6 +732,7 @@
 
     updatePeriodUi();
     refreshPolygonList();
+    updateMapOverlay();
   }
 
   function backToAreas() {
@@ -710,8 +755,10 @@
     currentEntities = [];
     document.getElementById('areaHeading').textContent = 'בחרי אזור על המפה';
     document.getElementById('areaSelectHint').hidden = false;
+    document.getElementById('areaButtons').hidden = false;
     document.getElementById('backToAreasBtn').hidden = true;
     document.getElementById('visualizationBody').hidden = true;
+    document.getElementById('deltaOverlay').style.display = 'none';
   }
 
   function setYear(index) {
@@ -736,6 +783,7 @@
 
     updatePeriodUi();
     refreshPolygonList();
+    updateMapOverlay();
   }
 
   function updatePeriodUi() {
@@ -825,14 +873,17 @@
     });
   }
 
-  function buildDeltaOverlayUrl(layerId, mx, my, diffDate) {
-    const halfWm = (COMPARE_IMG_W / 2) * BASE_COMPARE_METERS_PER_PIXEL;
-    const halfHm = (COMPARE_IMG_H / 2) * BASE_COMPARE_METERS_PER_PIXEL;
+  function buildDeltaOverlayUrl(layerId, mx, my, diffDate, opts) {
+    const w = (opts && opts.width) || COMPARE_IMG_W;
+    const h = (opts && opts.height) || COMPARE_IMG_H;
+    const mpp = (opts && opts.metersPerPixel) || BASE_COMPARE_METERS_PER_PIXEL;
+    const halfWm = (w / 2) * mpp;
+    const halfHm = (h / 2) * mpp;
     const bbox = [mx - halfWm, my - halfHm, mx + halfWm, my + halfHm].join(',');
     const paramsObj = {
       service: 'WMS', version: '1.3.0', REQUEST: 'GetMap', FORMAT: 'image/png',
       STYLES: 'govmap:' + layerId, TRANSPARENT: 'TRUE', LAYERS: 'govmap:' + layerId,
-      CRS: 'EPSG:3857', WIDTH: String(COMPARE_IMG_W), HEIGHT: String(COMPARE_IMG_H), BBOX: bbox
+      CRS: 'EPSG:3857', WIDTH: String(w), HEIGHT: String(h), BBOX: bbox
     };
     if (diffDate) {
       paramsObj.CQL_FILTER = "name='" + currentArea + "' AND diff_date='" + diffDate + "'";
