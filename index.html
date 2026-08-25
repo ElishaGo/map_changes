@@ -8,169 +8,12 @@
   per year, a raster layer (bottom) and a delta/change vector layer
   (top) - see YEARS_DATA further down for the current layer ids.
 
-  Year slider: each year has a "base" raster layer + a cumulative
-  "delta" raster layer. Moving the slider calls govmap.setVisibleLayers
-  to turn the previous year's pair off and the target year's pair on.
-
-  Polygon list + comparison:
-  - POLYGON_DATA[currentYear] lists every polygon (id, x, y, mx, my) for
-    the delta layer of the year selected on the slider. x/y are ITM
-    (EPSG:2039, what the live main map uses); mx/my are the same point
-    pre-projected to Web Mercator (EPSG:3857, meters) - see "STATIC
-    COMPARISON IMAGES" below for why both are kept. We show just the id
-    in a scrollable list, next to the map (see POLYGON_DATA note below
-    for where this data comes from).
-  - Selecting a polygon - by clicking it in the list, OR by clicking it
-    directly on the main map (see onClick/handleMapClick, which
-    nearest-neighbor-matches a map click's coordinate against
-    POLYGON_DATA) - does three things: (1) drops a pin on the main map
-    with setMapMarker, (2) re-centers the main map on it with zoomToXY
-    without changing its zoom (see MAIN_MAP_LEVEL), and (3) (re)builds
-    the before/after comparison below: right column = the active
-    slider year's change layer, left column = the previous year's (or
-    an empty placeholder if there isn't one), both rendered as static
-    close-up images centered on that polygon. This is deliberately
-    relative to the slider, not fixed to specific years.
-
-  STATIC COMPARISON IMAGES (why there's no live GovMap map down there
-  any more): the two before/after panels used to be live govmap.createMap
-  iframes, like the main map. That was dropped after two GovMap-side
-  problems turned out to be unfixable from this file:
-
-  1. THE PER-YEAR RASTER ("base") LAYERS DON'T ACTUALLY RENDER, ANYWHERE.
-     Confirmed by calling the exact same WMS request GovMap's own client
-     makes (https://www.govmap.gov.il/api/geoserver/ows, GetMap,
-     LAYERS=govmap:layer_241656 / layer_241661) directly: GeoServer
-     replies with a LayerNotDefined ServiceException, consistently, no
-     matter who asks. The "delta" layers (layer_241657, layer_241662)
-     answer the identical request fine. So the raster year-photo layers
-     are not published correctly on GovMap's backend right now - this
-     was true of the old live comparison maps too (they only ever showed
-     visibleLayers: [yearEntry.base], i.e. a layer that was silently
-     failing to draw the whole time), it's just more visible now that
-     there's no map chrome to hide it behind.
-  2. GOVMAP'S PUBLIC ORTHOPHOTO TILES ARE ORIGIN-LOCKED TO GOVMAP.GOV.IL.
-     https://basemaps.govmap.gov.il/tms/orto2025me_update/{z}/{x}/{y}.jpg
-     is unauthenticated (no token/cookie needed) but tested directly from
-     this site's actual deployed domain (elishago.github.io) - not from
-     govmap.gov.il - and got a flat 401 on every tile, including with
-     referrerpolicy="no-referrer" on the <img> (so it's not simply an
-     easily-spoofed Referer check). No GovMap-hosted background imagery
-     is fetchable from this page at all.
-
-  What DOES work, confirmed live from the deployed elishago.github.io
-  page itself (not just from a govmap.gov.il tab): a plain WMS GetMap
-  request for a delta layer (LAYERS=govmap:layer_<id>, STYLES the same,
-  FORMAT=image/png, TRANSPARENT=TRUE, CRS=EPSG:3857, an arbitrary WIDTH/
-  HEIGHT/BBOX) returns that layer's polygons as a normal cross-origin
-  image - no token, no cookies, no CORS error, loads via a plain <img>
-  (never via fetch(), which WOULD need CORS headers this endpoint may or
-  may not send - <img> sidesteps that question entirely since nothing
-  ever reads pixels back out of the canvas here). renderComparisonImage()
-  draws this on top, for both slots.
-
-  THE BACKGROUND PHOTO: not from GovMap at all. The actual per-year
-  aerial imagery lives on the report owner's own AWS - a CloudFront
-  distribution (d3mbl8vufuvx6n.cloudfront.net) in front of an S3 bucket,
-  as pre-cut standard XYZ tiles (256x256, z/x/y, non-flipped Y - same
-  scheme as GovMap's own tiles, so the mercToTilePixel math below serves
-  both this and the WMS bbox above), one folder per year under
-  minhal_ez_bldg_changes/XYZ_setlment_2/ - see CLOUDFRONT_YEAR_FOLDER for
-  the exact folder names (they don't all match the YEARS_DATA label).
-  Confirmed cross-origin-open from the deployed elishago.github.io page,
-  no auth, no origin restriction (unlike GovMap's own basemap tiles
-  above) - this is presumably also what GovMap's own "base" layers
-  (layer_241656 etc.) point at client-side, which would explain both why
-  those never worked as a GovMap WMS/layer id (see point 1 above) and
-  why they're needed as a separate config here instead of just reusing
-  YEARS_DATA.base.
-
-  COMPARE_TILE_ZOOM is the deepest zoom BOTH years' tile sets actually
-  have imagery at - checked directly against the CloudFront URLs: z16-18
-  return real tiles for both "2024" and "2025_new", z19 returns tiles
-  for "2024" but not "2025_new" (confirmed across a 3x3 tile
-  neighborhood, not just one gap - a genuine max-zoom difference between
-  the two uploads, not a coverage hole), z20+ returns nothing for
-  either. 18 is the highest level both years share, so that's what's
-  used for both, even though "2024" could technically go one level
-  deeper - a consistent resolution across the two comparison panels
-  matters more here than squeezing out 2024's last zoom level.
-  drawBackgroundTiles/renderComparisonImage/COMPARE_* constants further
-  down have the implementation.
-
-  WHY THE POLYGON LIST ISN'T LIVE-QUERIED FROM GOVMAP: tested directly
-  against https://elishago.github.io/map_changes/ - background/layers/
-  token/domain all work correctly (createMap's iframe to www.govmap.gov.il
-  connects fine), BUT govmap.getLayerEntities() hung indefinitely in
-  every test - no resolve, no reject, no console error - even for the
-  public "GASSTATIONS" layer straight from GovMap's own docs example,
-  even with the token omitted, even ~25s after page load. Looked like a
-  GovMap-side permission gap for entity/feature queries specifically
-  (basic map display works fine), not something fixable from this file.
-
-  So instead: POLYGON_DATA below is baked in ahead of time from the
-  SAME source data you uploaded to GovMap (setlment_2/delta_output/
-  delta_<from>_<to>_cum.xlsx - each row already has a delta_id and a
-  precomputed centroid_x/centroid_y in the same ITM meters GovMap uses).
-  Regenerate it with generate_polygon_data.py whenever you add/update a
-  year of delta data - see that script's docstring. No live GovMap
-  entity query happens at all anymore; the list renders from
-  POLYGON_DATA synchronously, and selecting an item just zooms/pins to
-  its stored (x, y) - govmap.zoomToXY / setMapMarker don't care whether
-  those coordinates came from a live query or a baked-in table. A map
-  click's coordinate (see WHAT onClick GIVES YOU below) is matched to
-  the nearest POLYGON_DATA entry within CLICK_RADIUS_M - there's no
-  feature id to cross-reference directly, since getLayerEntities was
-  never usable in the first place.
-
-  WHAT onClick GIVES YOU: not documented beyond "function(e)" in the
-  GovMap docs, so this was confirmed empirically (attach onClick, click
-  the live map, inspect the logged event): e.mapPoint = { x, y,
-  spatialReference: { wkid: 2039 } } (wkid 2039 = ITM, same system
-  POLYGON_DATA uses - no conversion needed) plus e.screenPoint (pixel
-  coordinates, unused here).
-
-  LEVEL vs SCALE: GovMap's docs say level (0-10, "identical to the z
-  parameter in the full portal's URL") tops out at 10, but the full
-  portal's own zoom-in button clearly goes further - confirmed live at
-  www.govmap.gov.il by clicking zoom-in repeatedly and reading its
-  on-screen "1:N" scale readout: z=9 -> 1:8,000, z=10 -> 1:4,000,
-  z=11 -> 1:2,000, z=12 -> 1:1,000, z=13 -> 1:500, z=14 -> 1:250 (each
-  step exactly doubles the scale; fractional z is truncated to the
-  integer, so nothing finer than whole-number steps is possible). This
-  only matters for MAIN_MAP_LEVEL now - the comparison images (see
-  STATIC COMPARISON IMAGES above) don't go through GovMap's level
-  parameter at all any more, they pick their own resolution directly
-  (COMPARE_METERS_PER_PIXEL) since a WMS GetMap call takes an explicit
-  BBOX/WIDTH/HEIGHT instead of a level.
-
-  MULTI-MAP TARGETING (mapDivId): documented as "supported by every
-  function" but no example shows the call shape for functions that
-  don't already take an object (e.g. setVisibleLayers takes two array
-  args, not an object) - so those stay scoped to "whichever map(s)
-  aren't specified" by simply never having more than one map alive when
-  they're called. mapDivId itself IS confirmed working: zoomToXY and
-  setMapMarker reliably targeted one specific map (by mapDivId) while
-  other maps were simultaneously live, tested directly against the
-  deployed page. Only the main map is a live govmap instance any more
-  (see STATIC COMPARISON IMAGES above), so this no longer matters in
-  practice, but is left here in case a future change brings back a
-  second live map.
-
-  Docs:
-  - https://api.govmap.gov.il/docs/javascript-functions/create-map
-  - https://api.govmap.gov.il/docs/javascript-functions/set-background
-  - https://api.govmap.gov.il/docs/javascript-functions/set-visible-layers
-  - https://api.govmap.gov.il/docs/javascript-functions/set-map-marker
-  - https://api.govmap.gov.il/docs/javascript-functions/clear-map-marker
-  - https://api.govmap.gov.il/docs/javascript-functions/zoom-to-xy
-  - https://api.govmap.gov.il/docs/intro/attache-a (private layer naming: layer_<ID>)
-
-  NOTE ON THE TOKEN: GovMap tokens are issued per-domain and only work
-  on the domain they were registered for. Make sure this token is
-  registered for the exact GitHub Pages domain you publish this on
-  (e.g. yourusername.github.io or a custom domain) - otherwise the map
-  will fail to load with a domain-mismatch error.
+  NOTE: this version includes the multi-area selector (choose-an-area
+  boundary map, then drill into נחלין/עקרבא/עזון עתמה). It was tested
+  earlier ONLY by opening the file locally (file:///...), which fails
+  GovMap's domain-locked token entirely (401s on every private-layer
+  call) - so nothing about private layers was ever actually verified.
+  Test this only via the real deployed URL.
 -->
 <!DOCTYPE html>
 <html lang="he" dir="rtl">
@@ -649,94 +492,30 @@
 
   const MAIN_MAP_ID = 'map';
 
-  // Comparison (before/after) mini-maps: static images now, not live
-  // GovMap maps - see STATIC COMPARISON IMAGES at the top of the file
-  // for why, and for what CLOUDFRONT_TILE_BASE/CLOUDFRONT_YEAR_FOLDER
-  // point at. COMPARE_TILE_ZOOM is a standard slippy-map zoom level (NOT
-  // a GovMap "level") - 18 is the deepest zoom BOTH years' AWS tile sets
-  // actually have imagery at, confirmed directly against the CloudFront
-  // URLs (see top-of-file note for the z19 asymmetry between years).
   const CLOUDFRONT_TILE_BASE = 'https://d3mbl8vufuvx6n.cloudfront.net/minhal_ez_bldg_changes/XYZ_setlment_2';
-  // cloudfrontFolder mapping now lives per-area in AREA_CONFIG (see below) - not global, since only נאחלין has tiles configured so far.
   const COMPARE_TILE_ZOOM = 18;
   const BASE_COMPARE_METERS_PER_PIXEL = 156543.03392804097 / Math.pow(2, COMPARE_TILE_ZOOM); // ~0.597 m/px
 
-  // Zoom on the before/after comparison images. This is a purely visual
-  // crop-in (showing less ground per pixel), NOT a request for sharper
-  // source tiles - z18 is already the deepest imagery either year's AWS
-  // tile set has (see COMPARE_TILE_ZOOM above), so high zoom steps will
-  // look softer/blockier, same tradeoff as digital zoom on a photo.
   const ZOOM_LEVELS = [1, 1.5, 2, 3, 4, 6];
   let zoomIndex = 0;
-  let lastCompareEntity = null; // re-used to re-render both slots when zoom changes
+  let lastCompareEntity = null;
 
-  // Comparison image pixel size (canvas backing resolution - CSS then
-  // fits this into the .compare-map box via object-fit: cover, see
-  // <style>). At COMPARE_METERS_PER_PIXEL this frames roughly 380m x
-  // 285m of ground - wider than a single building, since z18 is the
-  // deepest imagery actually available (see COMPARE_TILE_ZOOM above);
-  // still centered tightly on the selected polygon via the marker.
   const COMPARE_IMG_W = 640;
   const COMPARE_IMG_H = 480;
 
-  // Main map: an explicit, fixed overview level. Needed so that
-  // "re-center on the clicked polygon without changing zoom" (see
-  // selectPolygon) has a stable value to re-apply - GovMap has no
-  // documented center-only pan call, so we always pass this same level
-  // back into zoomToXY, which keeps the net zoom unchanged.
-  const MAIN_MAP_LEVEL = 8; // 0-10 scale, ~1:15,000 - frames the whole settlement (initial/overview only)
-  const SELECT_MAP_LEVEL = 12; // ~1:1,000 - used only after clicking a specific finding, so the comparison area is what fills the view
+  const MAIN_MAP_LEVEL = 8;
+  const SELECT_MAP_LEVEL = 12;
 
-  // Fallback only if POLYGON_DATA ever has no entries to average (should
-  // not happen in practice - see generate_polygon_data.py).
   const FALLBACK_CENTER = { x: 211447, y: 621816 };
 
-  // One entry per year available on the slider, in chronological order.
-  // "base" = that year's raster (aerial photo), "delta" = cumulative
-  // change VECTOR layer through that year (this is the one we list
-  // polygons from). Order within each pair matters for stacking on the
-  // main map: base first (bottom), delta second (top).
-  //
-  // NOTE ON "base": as of this writing layer_241656 and layer_241661
-  // (the raster year-photos) don't render anywhere - confirmed via a
-  // direct WMS GetMap request, see STATIC COMPARISON IMAGES at the top
-  // of the file. They're left registered here (main map visibleLayers/
-  // ALL_LAYERS) since GovMap's UI still lists them as valid layer ids
-  // and this may get fixed on GovMap's end without needing a code
-  // change here - but don't expect them to actually draw on the main
-  // map either until that happens. Only "delta" is used by the
-  // comparison images (renderComparisonImage further down).
   const YEARS_DATA = [
     { label: "2024", period: "2023–2024", diffDate: "2023 - 2024", base: "layer_241661", delta: "layer_242108" },
     { label: "2025", period: "2024–2025", diffDate: "2024 - 2025", base: "layer_241656", delta: "layer_242108" }
   ];
 
-  // The combined delta layer (layer_242108) holds all 3 pilot areas,
-  // both periods, and every category together - CQL_FILTER on the WMS
-  // GetMap call (buildDeltaOverlayUrl) narrows it to just this area's
-  // points for the active period. Field names (name/diff_date) assumed
-  // identical to the source shapefile's columns - GovMap's layer editor
-  // only exposes display-label aliases, not the underlying field names,
-  // so this is unverified until checked live. If the comparison overlay
-  // renders empty, this is the first thing to re-check.
-  // ---- Multi-area configuration --------------------------------------
-  // AREAS_LAYER: the settlement-boundary polygons (layer_242116),
-  // shown only in "choose an area" mode. DELTA_LAYER: the one combined
-  // points layer (layer_242108) shared by every area/period/category -
-  // narrowed per-request via CQL_FILTER (see buildDeltaOverlayUrl).
   const AREAS_LAYER = "layer_242116";
   const DELTA_LAYER = "layer_242108";
 
-  // Per-area setup. Keyed by the spelling used in the points data
-  // (buildings_points_pilot.shp's "name" column) - boundaryName is the
-  // (differently-spelled, for נאחלין) name in the boundary layer, used
-  // only to match a map click against BOUNDARIES below. periods lists
-  // which year-labels this area actually has data for - נאחלין has
-  // both; the other two currently have only 2024-2025 (no 2023-2024
-  // comparison exists for them yet). base/cloudfrontFolder are only
-  // known for נאחלין so far - an area without them still gets its
-  // points list and delta overlay, just no background aerial photo on
-  // the main map or in the comparison images until those are supplied.
   const AREA_CONFIG = {
     "נאחלין": {
       displayName: "נחלין",
@@ -761,21 +540,12 @@
     }
   };
 
-  // Boundary polygons (rings, in ITM/EPSG:2039 - same as map clicks),
-  // rebuilt from minhal_ezrahi_3_setl_areas.shp - keyed by that layer's
-  // own SETL_NAME spelling (see AREA_CONFIG[x].boundaryName for the
-  // mapping back to the points-data spelling).
   const BOUNDARIES = {"נחאלין":{"rings":[[[211924.5,621691.0],[212000.5,621587.0],[212108.5,621483.0],[212204.5,621591.0],[212360.5,621475.0],[212372.5,621315.0],[212360.5,621138.9],[212276.5,621010.9],[212240.5,620914.9],[212072.5,620954.9],[211992.5,620902.9],[211788.4,620902.9],[211664.4,620922.9],[211536.3,620978.5],[211461.8,620932.6],[211262.3,620912.6],[211100.3,620978.9],[211028.3,621062.9],[210984.3,621114.9],[210840.3,621126.9],[210604.6,621246.1],[210552.2,621339.0],[210435.3,621548.9],[210708.2,621735.0],[210856.3,621623.0],[211068.3,621619.0],[211112.3,621631.0],[211132.3,621811.0],[211396.4,622071.1],[211620.4,622123.1],[211792.4,622011.1],[211996.5,621875.1],[211924.5,621691.0]]],"bounds":[210435.3,620902.9,212372.5,622123.1]},"עקרבא":{"rings":[[[232926.7,669143.3],[232916.3,669311.8],[232799.4,669360.0],[232709.9,669325.6],[232593.0,669332.5],[232579.2,669397.8],[232386.6,669432.2],[232338.4,669435.7],[232231.8,669428.8],[232224.9,669301.5],[232108.0,669342.8],[232114.9,669435.7],[231953.2,669439.1],[231953.2,669532.0],[231770.9,669538.9],[231708.9,669652.4],[231695.2,669803.7],[231602.3,669865.7],[231451.0,669882.9],[231433.8,670089.3],[231571.4,670134.0],[231543.8,670240.6],[231595.4,670268.1],[231598.9,670354.1],[231770.9,670371.3],[231856.9,670388.5],[231836.2,670450.4],[231942.9,670457.3],[232028.9,670519.2],[232111.4,670632.8],[232121.7,670698.1],[232121.7,670763.5],[232046.1,670880.4],[232211.2,670963.0],[232321.2,670901.1],[232403.8,670945.8],[232352.2,671083.4],[232541.4,671152.2],[232623.9,671107.5],[232627.4,670983.6],[232765.0,670993.9],[232857.9,671093.7],[233071.1,671076.5],[233136.5,670914.8],[233184.6,670780.7],[233256.9,670667.2],[233394.5,670629.3],[233483.9,670639.6],[233659.3,670464.2],[233683.4,670319.7],[233618.1,670278.4],[233432.3,670192.5],[233542.4,669965.4],[233535.5,669803.7],[233487.4,669779.7],[233346.3,669786.5],[233291.3,669762.5],[233291.3,669710.9],[233336.0,669607.7],[233449.5,669528.6],[233532.1,669384.1],[233542.4,669291.2],[233415.1,669280.9],[233315.4,669225.9],[233143.4,669157.1],[233135.9,669156.9],[233119.1,669030.3],[233132.9,668892.6],[233194.9,668775.5],[233260.3,668648.1],[233301.6,668572.3],[233250.0,668462.2],[233243.1,668234.9],[233215.5,668090.3],[233088.1,668097.2],[233070.9,668279.7],[232991.7,668310.7],[232953.8,668372.6],[232950.4,668527.6],[232922.9,668682.5],[232916.0,668830.6],[232928.9,669143.6],[232926.7,669143.3]]],"bounds":[231433.8,668090.3,233683.4,671152.2]},"עזון עתמה":{"rings":[[[200743.0,670010.1],[200758.7,670116.7],[201009.6,670455.5],[201010.1,670475.8],[201012.8,670577.8],[201125.7,670631.1],[201219.8,670634.3],[201291.9,670615.4],[201326.4,670609.2],[201329.6,670430.4],[201373.5,670370.8],[201536.6,670323.7],[201546.0,670270.4],[201546.0,670213.9],[201602.5,670173.2],[201658.9,670217.1],[201743.6,670192.0],[201831.5,670192.0],[201891.4,670179.3],[202016.6,670139.7],[202126.3,670104.2],[202174.8,670109.5],[202198.2,670083.0],[202235.1,670059.5],[202280.0,670034.5],[202320.1,670001.2],[202336.1,669965.2],[202355.4,669934.0],[202369.8,669893.1],[202391.4,669821.0],[202386.6,669772.9],[202369.8,669696.0],[202372.2,669652.7],[202376.6,669502.7],[202308.2,669423.5],[202248.6,669307.4],[202223.6,669225.9],[202066.7,669257.2],[201988.3,669276.0],[201985.2,669194.5],[201942.8,669155.1],[201881.5,669115.7],[201807.0,669080.5],[201759.3,669163.1],[201684.0,669200.8],[201604.0,669176.5],[201589.9,669056.5],[201489.6,668990.6],[201379.8,668962.4],[201342.1,668990.6],[201364.1,669081.6],[201411.1,669153.7],[201398.6,669225.9],[201414.3,669320.0],[201382.9,669407.8],[201304.5,669385.8],[201188.4,669379.6],[201088.0,669404.7],[200780.6,669903.4],[200743.0,670010.1]]],"bounds":[200743.0,668962.4,202391.4,670634.3]}};
 
-  // All layers registered on the main map (so GovMap knows about them
-  // even while hidden): the boundary layer, the shared delta layer
-  // once, and every configured base raster.
   const ALL_LAYERS = [AREAS_LAYER, DELTA_LAYER].concat(
     Object.values(AREA_CONFIG).flatMap(function (a) { return Object.values(a.base); })
   );
 
-  // Plain average of a set of {x,y} points - good enough for framing a
-  // map center, no GIS lib needed for that.
   function averageCenter(points) {
     if (!points || !points.length) return null;
     let sx = 0, sy = 0;
@@ -783,8 +553,6 @@
     return { x: sx / points.length, y: sy / points.length };
   }
 
-  // Combined bounding box of all configured boundary polygons, for the
-  // initial "choose an area" overview.
   function combinedBounds() {
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     Object.values(BOUNDARIES).forEach(function (b) {
@@ -794,9 +562,6 @@
     return { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
   }
 
-  // Ray-casting point-in-polygon test (standard even-odd rule), used to
-  // figure out which settlement boundary a map click landed in - no
-  // live GovMap query needed since we already have the geometry.
   function pointInRing(x, y, ring) {
     let inside = false;
     for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
@@ -821,21 +586,14 @@
     return null;
   }
 
-  // Rebuilt from buildings_points_pilot.shp (points layer, EPSG:2039) -
-  // do not hand-edit, regenerate the same way when the layer is
-  // updated. Keyed by area (points-data spelling, matches AREA_CONFIG),
-  // then by year label; diff_date '2023 - 2024' -> "2024",
-  // '2024 - 2025' -> "2025". Includes every category (מבנה חדש /
-  // חשד למבנה חדש) - shown per-item in the list (see refreshPolygonList).
   const POLYGON_DATA = {"עקרבא":{"2024":[],"2025":[{"id":1,"x":232246.2,"y":670932.2,"mx":3934029.18,"my":3780612.6,"cat":"מבנה חדש"},{"id":2,"x":232754.5,"y":670896.4,"mx":3934628.88,"my":3780569.4,"cat":"מבנה חדש"},{"id":3,"x":232351.2,"y":670848.3,"mx":3934152.97,"my":3780513.06,"cat":"מבנה חדש"},{"id":4,"x":232394.5,"y":670801.3,"mx":3934203.98,"my":3780457.31,"cat":"מבנה חדש"},{"id":5,"x":232387.1,"y":670801.3,"mx":3934195.19,"my":3780457.23,"cat":"מבנה שנהרס"},{"id":6,"x":232923.6,"y":670611.6,"mx":3934827.82,"my":3780231.52,"cat":"מבנה חדש"},{"id":7,"x":233214.4,"y":670495.7,"mx":3935170.71,"my":3780093.72,"cat":"מבנה שנהרס"},{"id":8,"x":232383.1,"y":670453.5,"mx":3934189.98,"my":3780045.0,"cat":"מבנה חדש"},{"id":9,"x":233181.9,"y":670383.6,"mx":3935132.2,"my":3779960.9,"cat":"מבנה חדש"},{"id":10,"x":231692.1,"y":670337.1,"mx":3933374.65,"my":3779908.03,"cat":"מבנה חדש"},{"id":11,"x":231808.3,"y":670257.9,"mx":3933511.61,"my":3779813.96,"cat":"מבנה חדש"},{"id":12,"x":232098.1,"y":670233.1,"mx":3933853.49,"my":3779784.15,"cat":"מבנה חדש"},{"id":13,"x":231874.2,"y":670212.1,"mx":3933589.28,"my":3779759.55,"cat":"מבנה חדש"},{"id":14,"x":231679.8,"y":670210.7,"mx":3933360.0,"my":3779758.23,"cat":"מבנה חדש"},{"id":15,"x":233390.3,"y":670201.8,"mx":3935377.76,"my":3779745.09,"cat":"מבנה חדש"},{"id":16,"x":232081.1,"y":670081.7,"mx":3933833.2,"my":3779604.76,"cat":"מבנה חדש"},{"id":17,"x":232472.8,"y":670035.6,"mx":3934295.15,"my":3779549.47,"cat":"מבנה שנהרס"},{"id":18,"x":232905.2,"y":670016.1,"mx":3934805.23,"my":3779525.7,"cat":"מבנה שנהרס"},{"id":19,"x":232182.0,"y":669957.9,"mx":3933952.09,"my":3779457.79,"cat":"מבנה חדש"},{"id":20,"x":231693.9,"y":669888.9,"mx":3933376.16,"my":3779376.73,"cat":"מבנה חדש"},{"id":21,"x":232288.3,"y":669886.4,"mx":3934077.32,"my":3779372.91,"cat":"מבנה חדש"},{"id":22,"x":231970.9,"y":669868.8,"mx":3933702.9,"my":3779352.56,"cat":"מבנה חדש"},{"id":23,"x":232519.6,"y":669868.6,"mx":3934350.14,"my":3779351.52,"cat":"חשד למבנה חדש"},{"id":24,"x":233441.5,"y":669816.0,"mx":3935437.5,"my":3779287.67,"cat":"מבנה חדש"},{"id":25,"x":231818.5,"y":669701.0,"mx":3933522.87,"my":3779153.82,"cat":"מבנה חדש"},{"id":26,"x":232794.8,"y":669623.9,"mx":3934674.4,"my":3779061.0,"cat":"מבנה חדש"},{"id":27,"x":232795.5,"y":669581.8,"mx":3934675.2,"my":3779011.1,"cat":"מבנה חדש"},{"id":28,"x":231880.6,"y":669578.0,"mx":3933595.96,"my":3779007.98,"cat":"מבנה חדש"},{"id":29,"x":232098.3,"y":669438.9,"mx":3933852.58,"my":3778842.72,"cat":"מבנה חדש"},{"id":30,"x":233153.9,"y":669432.8,"mx":3935097.65,"my":3778833.88,"cat":"מבנה חדש"},{"id":31,"x":232888.1,"y":669416.0,"mx":3934784.18,"my":3778814.46,"cat":"מבנה חדש"},{"id":32,"x":233233.6,"y":669411.2,"mx":3935191.65,"my":3778808.14,"cat":"מבנה חדש"},{"id":33,"x":232827.1,"y":669411.1,"mx":3934712.14,"my":3778808.78,"cat":"מבנה חדש"},{"id":34,"x":232619.3,"y":669341.9,"mx":3934466.96,"my":3778726.99,"cat":"מבנה חדש"},{"id":35,"x":232561.4,"y":669327.0,"mx":3934398.62,"my":3778709.41,"cat":"מבנה חדש"},{"id":36,"x":233042.6,"y":669153.2,"mx":3934966.01,"my":3778502.74,"cat":"מבנה חדש"}]},"עזון עתמה":{"2024":[],"2025":[{"id":1,"x":201152.6,"y":670502.3,"mx":3897347.65,"my":3780093.06,"cat":"חשד למבנה חדש"},{"id":2,"x":200865.5,"y":670270.9,"mx":3897009.5,"my":3779818.17,"cat":"מבנה חדש"},{"id":3,"x":200942.7,"y":670061.1,"mx":3897100.98,"my":3779569.68,"cat":"מבנה חדש"},{"id":4,"x":200950.8,"y":670044.4,"mx":3897110.58,"my":3779549.86,"cat":"מבנה חדש"},{"id":5,"x":201689.7,"y":670042.0,"mx":3897982.18,"my":3779548.58,"cat":"מבנה חדש"},{"id":6,"x":202252.9,"y":669982.1,"mx":3898646.71,"my":3779478.68,"cat":"מבנה שנהרס"},{"id":7,"x":202078.6,"y":669930.1,"mx":3898441.23,"my":3779416.69,"cat":"מבנה חדש"},{"id":8,"x":201576.7,"y":669815.1,"mx":3897849.42,"my":3779279.34,"cat":"חשד למבנה חדש"},{"id":9,"x":202328.6,"y":669794.3,"mx":3898736.43,"my":3779256.27,"cat":"מבנה חדש"},{"id":10,"x":201897.7,"y":669711.2,"mx":3898228.28,"my":3779156.93,"cat":"מבנה חדש"},{"id":11,"x":201643.3,"y":669627.1,"mx":3897928.29,"my":3779056.71,"cat":"מבנה חדש"},{"id":12,"x":201604.6,"y":669613.1,"mx":3897882.77,"my":3779040.0,"cat":"מבנה חדש"},{"id":13,"x":201944.9,"y":669479.8,"mx":3898284.4,"my":3778882.77,"cat":"מבנה חדש"},{"id":14,"x":202026.4,"y":669270.0,"mx":3898381.02,"my":3778634.19,"cat":"מבנה חדש"},{"id":15,"x":202049.5,"y":669264.4,"mx":3898408.25,"my":3778627.58,"cat":"מבנה חדש"}]},"נאחלין":{"2024":[{"id":1,"x":211423.6,"y":622060.7,"mx":3909508.9,"my":3722820.81,"cat":"מבנה חדש"},{"id":2,"x":211720.8,"y":622030.7,"mx":3909857.89,"my":3722785.77,"cat":"מבנה חדש"},{"id":3,"x":211768.9,"y":621950.2,"mx":3909914.47,"my":3722690.83,"cat":"מבנה חדש"},{"id":4,"x":211610.3,"y":621925.3,"mx":3909728.25,"my":3722661.28,"cat":"מבנה חדש"},{"id":5,"x":211245.9,"y":621890.3,"mx":3909300.41,"my":3722619.62,"cat":"מבנה חדש"},{"id":6,"x":211614.4,"y":621869.2,"mx":3909733.16,"my":3722595.12,"cat":"חשד למבנה חדש"},{"id":7,"x":211264.8,"y":621862.9,"mx":3909322.61,"my":3722587.33,"cat":"מבנה חדש"},{"id":8,"x":211510.1,"y":621751.6,"mx":3909610.73,"my":3722456.26,"cat":"מבנה חדש"},{"id":9,"x":211126.9,"y":621706.4,"mx":3909160.85,"my":3722402.55,"cat":"מבנה חדש"},{"id":10,"x":210601.3,"y":621639.7,"mx":3908543.87,"my":3722323.4,"cat":"מבנה חדש"},{"id":11,"x":210582.3,"y":621637.1,"mx":3908521.51,"my":3722320.22,"cat":"מבנה חדש"},{"id":12,"x":210553.6,"y":621620.1,"mx":3908487.86,"my":3722300.21,"cat":"מבנה חדש"},{"id":13,"x":211836.1,"y":621602.3,"mx":3909993.66,"my":3722280.39,"cat":"מבנה חדש"},{"id":14,"x":210841.5,"y":621571.4,"mx":3908825.88,"my":3722243.03,"cat":"מבנה חדש"},{"id":15,"x":211193.6,"y":621564.4,"mx":3909239.35,"my":3722235.08,"cat":"חשד למבנה חדש"},{"id":16,"x":210667.7,"y":621538.8,"mx":3908621.87,"my":3722204.35,"cat":"חשד למבנה חדש"},{"id":17,"x":211294.8,"y":621520.7,"mx":3909358.23,"my":3722183.62,"cat":"מבנה חדש"},{"id":18,"x":211151.9,"y":621507.4,"mx":3909190.39,"my":3722167.82,"cat":"מבנה חדש"},{"id":19,"x":210509.9,"y":621461.9,"mx":3908436.69,"my":3722113.54,"cat":"מבנה חדש"},{"id":20,"x":210504.6,"y":621443.9,"mx":3908430.5,"my":3722092.23,"cat":"מבנה חדש"},{"id":21,"x":211632.5,"y":621428.5,"mx":3909754.76,"my":3722075.15,"cat":"חשד למבנה חדש"},{"id":22,"x":210581.2,"y":621421.3,"mx":3908520.46,"my":3722065.61,"cat":"מבנה חדש"},{"id":23,"x":210526.0,"y":621386.1,"mx":3908455.65,"my":3722024.03,"cat":"מבנה חדש"},{"id":24,"x":211713.6,"y":621381.5,"mx":3909850.03,"my":3722019.77,"cat":"חשד למבנה חדש"},{"id":25,"x":212089.7,"y":621358.9,"mx":3910291.58,"my":3721993.45,"cat":"מבנה חדש"},{"id":26,"x":210649.3,"y":621304.4,"mx":3908600.54,"my":3721927.77,"cat":"מבנה חדש"},{"id":27,"x":210733.0,"y":621296.9,"mx":3908698.79,"my":3721919.08,"cat":"מבנה חדש"},{"id":28,"x":210751.0,"y":621294.8,"mx":3908719.91,"my":3721916.62,"cat":"מבנה חדש"},{"id":29,"x":211915.8,"y":621285.5,"mx":3910087.52,"my":3721906.65,"cat":"מבנה חדש"},{"id":30,"x":211980.6,"y":621266.3,"mx":3910163.55,"my":3721884.07,"cat":"חשד למבנה חדש"},{"id":31,"x":211807.7,"y":621265.6,"mx":3909960.61,"my":3721883.15,"cat":"מבנה חדש"},{"id":32,"x":211044.4,"y":621264.2,"mx":3909064.39,"my":3721880.75,"cat":"מבנה חדש"},{"id":33,"x":211859.7,"y":621254.3,"mx":3910021.66,"my":3721869.83,"cat":"חשד למבנה חדש"},{"id":34,"x":211005.2,"y":621249.0,"mx":3909018.39,"my":3721862.8,"cat":"מבנה חדש"},{"id":35,"x":212278.9,"y":621214.5,"mx":3910513.83,"my":3721823.23,"cat":"מבנה חדש"},{"id":36,"x":211952.4,"y":621190.1,"mx":3910130.57,"my":3721794.22,"cat":"מבנה חדש"},{"id":37,"x":210841.4,"y":621166.2,"mx":3908826.18,"my":3721764.96,"cat":"חשד למבנה חדש"},{"id":38,"x":212160.1,"y":621139.2,"mx":3910374.46,"my":3721734.32,"cat":"חשד למבנה חדש"},{"id":39,"x":211543.6,"y":621069.8,"mx":3909650.7,"my":3721651.87,"cat":"מבנה חדש"},{"id":40,"x":211505.3,"y":621060.4,"mx":3909605.78,"my":3721640.72,"cat":"מבנה חדש"},{"id":41,"x":211057.3,"y":621057.3,"mx":3909079.73,"my":3721636.69,"cat":"מבנה חדש"},{"id":42,"x":211523.7,"y":621044.6,"mx":3909627.37,"my":3721622.14,"cat":"מבנה חדש"},{"id":43,"x":211434.5,"y":621011.4,"mx":3909522.7,"my":3721582.93,"cat":"מבנה חדש"},{"id":44,"x":211077.1,"y":621008.7,"mx":3909103.07,"my":3721579.38,"cat":"מבנה חדש"},{"id":45,"x":211811.7,"y":620960.7,"mx":3909965.5,"my":3721523.4,"cat":"מבנה חדש"},{"id":46,"x":211226.8,"y":620959.9,"mx":3909278.9,"my":3721521.91,"cat":"חשד למבנה חדש"}],"2025":[{"id":1,"x":211875.6,"y":621732.5,"mx":3910039.95,"my":3722433.99,"cat":"מבנה חדש"},{"id":2,"x":211605.2,"y":621724.6,"mx":3909722.46,"my":3722424.52,"cat":"מבנה חדש"},{"id":3,"x":210469.2,"y":621534.1,"mx":3908388.84,"my":3722198.58,"cat":"מבנה חדש"},{"id":4,"x":210585.3,"y":621477.8,"mx":3908525.21,"my":3722132.32,"cat":"מבנה חדש"},{"id":5,"x":210710.6,"y":621306.7,"mx":3908672.47,"my":3721930.64,"cat":"מבנה חדש"},{"id":6,"x":211085.6,"y":621281.7,"mx":3909112.74,"my":3721901.45,"cat":"חשד למבנה חדש"},{"id":7,"x":211452.8,"y":621070.9,"mx":3909544.11,"my":3721653.07,"cat":"מבנה חדש"},{"id":8,"x":211219.7,"y":621025.7,"mx":3909270.42,"my":3721599.51,"cat":"מבנה חדש"}]}};
 
-  // ---- State ----------------------------------------------------------
-  let currentArea = null;    // null = "choose an area" mode; else a key into AREA_CONFIG
-  let currentPeriodIndex = 0; // index into AREA_CONFIG[currentArea].periods
-  let currentEntities = [];   // POLYGON_DATA[currentArea][year] entries: [{id, x, y, cat}, ...]
-  let selectedIndex = -1;     // index into currentEntities, -1 = none selected
+  let currentArea = null;
+  let currentPeriodIndex = 0;
+  let currentEntities = [];
+  let selectedIndex = -1;
 
-  const AREAS_OVERVIEW_LEVEL = 5; // 0-10 scale - wide enough to show all 3 pilot areas at once; unverified live, adjust if too close/far
+  const AREAS_OVERVIEW_LEVEL = 5;
 
   function periodMeta(label) {
     return YEARS_DATA.find(function (y) { return y.label === label; });
@@ -845,28 +603,15 @@
     govmap.createMap(MAIN_MAP_ID, {
       token: GOVMAP_TOKEN,
       background: "1",
-
-      // Starts in "choose an area" mode: wide view, only the boundary
-      // layer visible - see selectArea/backToAreas for the mode switch.
       center: combinedBounds(),
       level: AREAS_OVERVIEW_LEVEL,
-
       visibleLayers: [AREAS_LAYER],
       layers: ALL_LAYERS,
-
       layersMode: 2,
       bgButton: true,
       zoomButtons: true,
       showXY: false,
       identifyOnClick: false,
-
-      // e.mapPoint is GovMap's click payload shape, confirmed live:
-      // { x, y, spatialReference: { wkid: 2039 } } - wkid 2039 is ITM,
-      // the same system BOUNDARIES/POLYGON_DATA use, so no conversion
-      // is needed. Routed differently depending on mode: in "choose an
-      // area" mode a click tests against the boundary polygons; once
-      // inside an area it nearest-neighbor-matches a building instead
-      // (unchanged behavior, see handleMapClick).
       onClick: function (e) {
         const pt = e && e.mapPoint;
         if (!pt) { console.warn('main map onClick fired without e.mapPoint', e); return; }
@@ -877,25 +622,21 @@
           handleMapClick(pt.x, pt.y);
         }
       },
-
       onLoad: function () {
         govmap.setVisibleLayers([AREAS_LAYER], []);
       },
-
       onError: function (e) {
         console.error('GovMap error', e);
       }
     });
   }
 
-  // ---- Area selection ---------------------------------------------------
-
   function selectArea(areaKey) {
     const config = AREA_CONFIG[areaKey];
     if (!config) return;
 
     currentArea = areaKey;
-    currentPeriodIndex = config.periods.length - 1; // default: most recent period
+    currentPeriodIndex = config.periods.length - 1;
 
     document.getElementById('areaHeading').textContent = config.displayName;
     document.getElementById('areaSelectHint').hidden = true;
@@ -942,11 +683,6 @@
     document.getElementById('visualizationBody').hidden = true;
   }
 
-  // Called on slider input, within the current area. Turns the previous
-  // period's base layer off and the target period's on (delta layer
-  // stays on throughout - see selectArea), then reloads the polygon
-  // list and closes any open comparison (a finding id from the old
-  // period's list isn't meaningful once the period has changed).
   function setYear(index) {
     index = Number(index);
     if (index === currentPeriodIndex) return;
@@ -974,17 +710,12 @@
     document.getElementById('yearLabel').textContent = meta.period;
   }
 
-  // ---- Polygon list -------------------------------------------------
-
   function escapeHtml(value) {
     return String(value).replace(/[&<>"']/g, function (c) {
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
     });
   }
 
-  // Reads straight from the baked-in POLYGON_DATA (see note at top of
-  // file for why this isn't a live GovMap query) - synchronous, no
-  // loading state needed.
   function refreshPolygonList() {
     closeComparison();
     selectedIndex = -1;
@@ -1014,8 +745,6 @@
     }).join('');
   }
 
-  // ---- Selection: pin on main map + before/after comparison ---------
-
   function selectPolygon(index) {
     const entity = currentEntities[index];
     if (!entity) return;
@@ -1027,30 +756,12 @@
 
     const center = { x: entity.x, y: entity.y };
 
-    // 1) pin on the main map, scoped to it via mapDivId (still relevant:
-    //    the main map is the only live govmap instance left, see STATIC
-    //    COMPARISON IMAGES at the top of the file)
     govmap.setMapMarker({ x: center.x, y: center.y, mapDivId: MAIN_MAP_ID });
-
-    // 2) re-center the main map on the polygon, zoomed in tighter than
-    //    the overview level (SELECT_MAP_LEVEL) so the selected building
-    //    fills more of the view - the comparison below is the main
-    //    point of selecting a finding, so the main map should already
-    //    be close before the user even looks down at it.
     govmap.zoomToXY({ x: center.x, y: center.y, level: SELECT_MAP_LEVEL, marker: false, mapDivId: MAIN_MAP_ID });
 
-    // 3) open the before/after comparison (static images, uses
-    //    entity.mx/entity.my - see openComparison)
     openComparison(entity);
   }
 
-  // Nearest-neighbor match against the active period's polygon list: a
-  // map click's payload only carries a raw coordinate (see initGovMap's
-  // onClick above), not one of our own polygon ids (getLayerEntities was
-  // never usable - see note at top of file - so there's no id to cross-
-  // reference in the first place). CLICK_RADIUS_M is generous enough to
-  // land inside a clicked building's footprint but small enough to
-  // ignore clicks that are clearly on unrelated background.
   const CLICK_RADIUS_M = 30;
 
   function handleMapClick(x, y) {
@@ -1070,46 +781,15 @@
     }
   }
 
-  // ---- Comparison images (static, not live GovMap maps) -------------
-  // See STATIC COMPARISON IMAGES at the top of the file for the full
-  // story on why this isn't govmap.createMap any more. Two independent
-  // pieces, composited onto one canvas per slot (background first, then
-  // overlay, then the marker - see renderComparisonImage):
-  //  - background: the real per-year aerial photo, stitched together
-  //    from XYZ tiles hosted on the report owner's own AWS (CloudFront +
-  //    S3) - see CLOUDFRONT_TILE_BASE/CLOUDFRONT_YEAR_FOLDER above and
-  //    drawBackgroundTiles below.
-  //  - overlay: that year's delta (change) polygons, as a single WMS
-  //    GetMap image straight from GovMap - see buildDeltaOverlayUrl.
-
   function loadImage(url) {
     return new Promise(function (resolve) {
       const img = new Image();
-      // Deliberately NOT setting img.crossOrigin: these govmap.gov.il
-      // URLs are third-party and of unknown CORS support, and this
-      // image is only ever drawn to a canvas that's displayed on
-      // screen, never read back (no toDataURL/getImageData/toBlob) - so
-      // a "tainted" canvas is harmless here. Setting crossOrigin would
-      // instead make the browser demand CORS headers just to load the
-      // image at all, and fail it outright if the server doesn't send
-      // them.
       img.onload = function () { resolve(img); };
       img.onerror = function () { resolve(null); };
       img.src = url;
     });
   }
 
-  // Builds a WMS GetMap URL for one delta layer, cropped to exactly
-  // COMPARE_IMG_W x COMPARE_IMG_H centered on (mx, my) at
-  // COMPARE_METERS_PER_PIXEL resolution. Confirmed working with no
-  // token and no cookies, tested directly from the deployed
-  // elishago.github.io page (not just from a govmap.gov.il tab).
-  //
-  // diffDate narrows the shared multi-area/multi-period layer_242108 to
-  // just this area+period via a GeoServer CQL_FILTER (see AREA_NAME /
-  // YEARS_DATA[i].diffDate note above) - omit it (pass null/undefined)
-  // to fall back to the old single-layer-per-period behavior for any
-  // layer id that isn't the combined one.
   function buildDeltaOverlayUrl(layerId, mx, my, diffDate) {
     const halfWm = (COMPARE_IMG_W / 2) * BASE_COMPARE_METERS_PER_PIXEL;
     const halfHm = (COMPARE_IMG_H / 2) * BASE_COMPARE_METERS_PER_PIXEL;
@@ -1126,14 +806,6 @@
     return 'https://www.govmap.gov.il/api/geoserver/ows?' + params.toString();
   }
 
-  // Web Mercator (EPSG:3857) tile math - half the world's width in
-  // meters, and standard 256px XYZ tiles. Used to turn a (mx, my) point
-  // into "which tiles cover this view, and where do they land in the
-  // output canvas" for drawBackgroundTiles below. Verified against real
-  // tile numbers GovMap's own client requested for this exact area
-  // (z15 x=19580 y=13340) before ever being used against the AWS tiles -
-  // same standard scheme, non-flipped y (i.e. NOT the "TMS" y-flip its
-  // URL path name might suggest).
   const WORLD_HALF = 20037508.342789244;
   const TILE_SIZE = 256;
 
@@ -1145,14 +817,6 @@
     };
   }
 
-  // Stitches however many COMPARE_TILE_ZOOM tiles are needed to fill
-  // (outW, outH) centered on (centerMx, centerMy), drawing each into ctx
-  // at its correct offset. yearFolder comes from CLOUDFRONT_YEAR_FOLDER
-  // - see STATIC COMPARISON IMAGES at the top of the file for what this
-  // AWS source is and why it exists alongside the GovMap WMS overlay.
-  // A missing/failed tile (edge of coverage) just leaves that patch of
-  // canvas showing whatever was drawn before it (the neutral fill) -
-  // never blocks the rest.
   async function drawBackgroundTiles(ctx, yearFolder, centerMx, centerMy, outW, outH) {
     const z = COMPARE_TILE_ZOOM;
     const halfWm = (outW / 2) * BASE_COMPARE_METERS_PER_PIXEL;
@@ -1179,22 +843,10 @@
     await Promise.all(jobs);
   }
 
-  // Draws one comparison slot into its div: neutral fill, the year's
-  // aerial photo (drawBackgroundTiles) once it's stitched together, the
-  // year's delta polygons on top of that if the overlay image loads,
-  // then a small marker at the exact selected-polygon center
-  // (entity.mx/entity.my - the Web Mercator twin of entity.x/entity.y,
-  // baked into POLYGON_DATA - see generate_polygon_data.py). Never
-  // throws - a failed image load (background or overlay) just leaves
-  // that layer undrawn, so one bad request can't block the rest of this
-  // slot or the other slot.
   async function renderComparisonImage(divId, yearEntry, entity) {
     const wrap = document.getElementById(divId);
-    if (!wrap) return; // slot may have been replaced/removed by a later click - nothing to do
+    if (!wrap) return;
 
-    // Source canvas: always drawn at BASE_COMPARE_METERS_PER_PIXEL (the
-    // native tile resolution) - zoom never changes what's fetched, only
-    // how the result below is cropped+scaled for display.
     const srcCanvas = document.createElement('canvas');
     srcCanvas.width = COMPARE_IMG_W;
     srcCanvas.height = COMPARE_IMG_H;
@@ -1202,39 +854,21 @@
     srcCtx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--compare-bg').trim() || '#eef1f4';
     srcCtx.fillRect(0, 0, COMPARE_IMG_W, COMPARE_IMG_H);
 
-    // Background first (drawn tile-by-tile as each one resolves), so
-    // the overlay ends up on top of it.
     const yearFolder = yearEntry.cloudfrontFolder;
     if (yearFolder) {
       await drawBackgroundTiles(srcCtx, yearFolder, entity.mx, entity.my, COMPARE_IMG_W, COMPARE_IMG_H);
     }
 
-    // See isConnected note further down - checked again after each
-    // await, since either fetch can take long enough for the slot to
-    // have been torn down or replaced in the meantime.
     if (!wrap.isConnected) return;
 
     const overlayImg = await loadImage(buildDeltaOverlayUrl(DELTA_LAYER, entity.mx, entity.my, yearEntry.diffDate));
 
-    // The slot may have been torn down (panel closed) or replaced by a
-    // NEW div with the same id (another polygon clicked before this
-    // image finished loading) while the fetch above was in flight.
-    // document.getElementById(divId) would find that new div and look
-    // "still there" even though wrap itself is stale - isConnected is
-    // what actually distinguishes "this exact node is still the one in
-    // the document" from "a node with this id exists again".
     if (!wrap.isConnected) return;
 
     if (overlayImg) {
       srcCtx.drawImage(overlayImg, 0, 0, COMPARE_IMG_W, COMPARE_IMG_H);
     }
 
-    // Displayed canvas: crop the center (COMPARE_IMG_W/zoom x
-    // COMPARE_IMG_H/zoom) region of srcCanvas and scale it up to fill
-    // the full COMPARE_IMG_W x COMPARE_IMG_H - this is the actual zoom.
-    // Higher zoom = smaller source crop = more magnified (and softer,
-    // since it's the same z18 pixels stretched further - see ZOOM_LEVELS
-    // note above).
     const zoom = ZOOM_LEVELS[zoomIndex];
     const canvas = document.createElement('canvas');
     canvas.width = COMPARE_IMG_W;
@@ -1247,9 +881,6 @@
     ctx.imageSmoothingEnabled = true;
     ctx.drawImage(srcCanvas, cropX, cropY, cropW, cropH, 0, 0, COMPARE_IMG_W, COMPARE_IMG_H);
 
-    // Marker at dead center = the selected polygon's centroid. Drawn on
-    // the final (zoomed) canvas so it always stays a fixed, crisp size
-    // regardless of zoom level.
     const cx = COMPARE_IMG_W / 2, cy = COMPARE_IMG_H / 2;
     ctx.beginPath();
     ctx.arc(cx, cy, 9, 0, 2 * Math.PI);
@@ -1274,24 +905,6 @@
     }
   }
 
-  // Right column = the active slider year (currentYearIndex); left
-  // column = the year immediately before it in YEARS_DATA, or an empty
-  // placeholder if there isn't one (e.g. the active year is the first
-  // one on record - no older year to compare against). DOM order matters
-  // here: this page is RTL, and under RTL both flex and CSS grid place
-  // the FIRST DOM child in the rightmost cell - so the active year's
-  // column is written first, landing it on the right as requested.
-  //
-  // Rebuilds both columns from scratch on every call, and fires both
-  // image loads without waiting for one before starting the other -
-  // unlike the old live-map version, there's no GovMap createMap
-  // lifecycle here to protect by reusing instances or sequencing loads,
-  // just two independent image fetches.
-  // Builds a {label, period, diffDate, cloudfrontFolder} entry for the
-  // period at currentPeriodIndex+offset within the current area's own
-  // periods list (not the global YEARS_DATA index - areas can have
-  // fewer periods, see AREA_CONFIG). Returns null if that offset is out
-  // of range (e.g. asking for "the period before" the first one).
   function areaPeriodEntry(offset) {
     const config = AREA_CONFIG[currentArea];
     const idx = currentPeriodIndex + offset;
@@ -1327,9 +940,6 @@
     }
   }
 
-  // Called by the ± buttons. Re-renders both comparison slots at the
-  // new zoom level, re-using whichever polygon is currently open
-  // (lastCompareEntity) - no need to re-select it.
   function zoomCompare(direction) {
     const next = zoomIndex + direction;
     if (next < 0 || next >= ZOOM_LEVELS.length || !lastCompareEntity) return;
@@ -1350,12 +960,6 @@
     document.querySelector('.zoom-btn[aria-label="הגדל זום"]').disabled = zoomIndex === ZOOM_LEVELS.length - 1;
   }
 
-  // Mouse-wheel zoom on the comparison images. Attached once to the
-  // static #compareMaps container (its children are rebuilt per
-  // selection, but the container itself is not - see openComparison).
-  // Throttled to one zoom step per WHEEL_THROTTLE_MS: each step
-  // re-fetches/redraws both slots, so an unthrottled trackpad/wheel
-  // burst would fire far more requests than the zoom buttons ever do.
   const WHEEL_THROTTLE_MS = 220;
   let lastWheelZoomAt = 0;
   document.getElementById('compareMaps').addEventListener('wheel', function (e) {
@@ -1386,7 +990,7 @@
     if (window.govmap) {
       govmap.clearMapMarker({ mapDivId: MAIN_MAP_ID });
     }
-    document.getElementById('compareMaps').innerHTML = ''; // drop the comparison canvases (any in-flight image loads just no-op when they resolve, see renderComparisonImage)
+    document.getElementById('compareMaps').innerHTML = '';
     selectedIndex = -1;
     lastCompareEntity = null;
     document.querySelectorAll('.polygon-item.active').forEach(function (btn) {
