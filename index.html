@@ -678,11 +678,15 @@
 
     const label = config.periods[currentPeriodIndex];
     const base = config.base[label];
-    govmap.setVisibleLayers(
-      base ? [base, DELTA_LAYER] : [DELTA_LAYER],
-      [AREAS_LAYER]
-    );
-    govmap.zoomToXY({ x: center.x, y: center.y, level: MAIN_MAP_LEVEL, marker: false, mapDivId: MAIN_MAP_ID });
+    try {
+      govmap.setVisibleLayers(
+        base ? [base, DELTA_LAYER] : [DELTA_LAYER],
+        [AREAS_LAYER]
+      );
+      govmap.zoomToXY({ x: center.x, y: center.y, level: MAIN_MAP_LEVEL, marker: false, mapDivId: MAIN_MAP_ID });
+    } catch (err) {
+      console.error('GovMap layer/zoom call failed in selectArea:', err);
+    }
 
     updatePeriodUi();
     refreshPolygonList();
@@ -690,14 +694,18 @@
 
   function backToAreas() {
     closeComparison();
-    if (currentArea) {
-      const config = AREA_CONFIG[currentArea];
-      const label = config.periods[currentPeriodIndex];
-      const base = config.base[label];
-      govmap.setVisibleLayers([AREAS_LAYER], base ? [base, DELTA_LAYER] : [DELTA_LAYER]);
+    try {
+      if (currentArea) {
+        const config = AREA_CONFIG[currentArea];
+        const label = config.periods[currentPeriodIndex];
+        const base = config.base[label];
+        govmap.setVisibleLayers([AREAS_LAYER], base ? [base, DELTA_LAYER] : [DELTA_LAYER]);
+      }
+      govmap.clearMapMarker({ mapDivId: MAIN_MAP_ID });
+      govmap.zoomToXY({ x: combinedBounds().x, y: combinedBounds().y, level: AREAS_OVERVIEW_LEVEL, marker: false, mapDivId: MAIN_MAP_ID });
+    } catch (err) {
+      console.error('GovMap call failed in backToAreas:', err);
     }
-    govmap.clearMapMarker({ mapDivId: MAIN_MAP_ID });
-    govmap.zoomToXY({ x: combinedBounds().x, y: combinedBounds().y, level: AREAS_OVERVIEW_LEVEL, marker: false, mapDivId: MAIN_MAP_ID });
 
     currentArea = null;
     selectedIndex = -1;
@@ -719,10 +727,14 @@
     const nextBase = config.base[config.periods[currentPeriodIndex]];
 
     if (prevBase !== nextBase) {
-      govmap.setVisibleLayers(
-        nextBase ? [nextBase] : [],
-        prevBase ? [prevBase] : []
-      );
+      try {
+        govmap.setVisibleLayers(
+          nextBase ? [nextBase] : [],
+          prevBase ? [prevBase] : []
+        );
+      } catch (err) {
+        console.error('GovMap setVisibleLayers failed in setYear:', err);
+      }
     }
 
     updatePeriodUi();
