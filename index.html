@@ -297,6 +297,24 @@
     min-width: 28px;
     text-align: center;
   }
+  .area-buttons {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 24px;
+  }
+  .area-btn {
+    border: 2px solid var(--accent);
+    background: var(--card-bg);
+    color: var(--accent);
+    border-radius: 8px;
+    padding: 14px 28px;
+    font-size: 1rem;
+    font-weight: 700;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .area-btn:hover { background: var(--accent); color: #fff; }
   .back-btn {
     display: inline-block;
     border: 1px solid var(--line);
@@ -393,11 +411,17 @@
 <main>
 
   <section id="visualization">
-    <h2 id="areaHeading">בחרי אזור על המפה</h2>
+    <h2 id="areaHeading">בחרי אזור</h2>
     <p id="areaSelectHint">
-      המפה שלהלן מציגה את שלושת אזורי הפיילוט מתוארים. לחצי על אחד מהם כדי לצפות בבניינים
-      החדשים שאותרו בו, לפי תקופת השוואה.
+      בחרי אזור מהכפתורים למטה כדי לצפות בבניינים החדשים שאותרו בו, לפי תקופת השוואה.
     </p>
+
+    <div id="areaButtons" class="area-buttons">
+      <button type="button" class="area-btn" onclick="selectArea('נאחלין')">נחלין</button>
+      <button type="button" class="area-btn" onclick="selectArea('עקרבא')">עקרבא</button>
+      <button type="button" class="area-btn" onclick="selectArea('עזון עתמה')">עזון עתמה</button>
+    </div>
+
     <p>
       בתוך אזור - הזיזו את המחוון כדי לעבור בין תקופות ההשוואה (כשיש יותר מאחת) - כל תקופה
       מציגה רק את הבניינים החדשים שהתגלו <strong>בפרק הזמן הזה בלבד</strong> (השוואה בין שתי
@@ -605,7 +629,7 @@
       background: "1",
       center: combinedBounds(),
       level: AREAS_OVERVIEW_LEVEL,
-      visibleLayers: [AREAS_LAYER],
+      visibleLayers: [],
       layers: ALL_LAYERS,
       layersMode: 2,
       bgButton: true,
@@ -615,15 +639,15 @@
       onClick: function (e) {
         const pt = e && e.mapPoint;
         if (!pt) { console.warn('main map onClick fired without e.mapPoint', e); return; }
-        if (currentArea === null) {
-          const hit = findAreaAtPoint(pt.x, pt.y);
-          if (hit) selectArea(hit);
-        } else {
+        if (currentArea !== null) {
           handleMapClick(pt.x, pt.y);
         }
       },
       onLoad: function () {
-        govmap.setVisibleLayers([AREAS_LAYER], []);
+        // No private layer needs to be visible yet - area selection now
+        // happens via the plain HTML buttons above the map (#areaButtons),
+        // not by clicking a boundary layer on the map (that path proved
+        // unreliable and is no longer used).
       },
       onError: function (e) {
         console.error('GovMap error', e);
@@ -640,6 +664,7 @@
 
     document.getElementById('areaHeading').textContent = config.displayName;
     document.getElementById('areaSelectHint').hidden = true;
+    document.getElementById('areaButtons').hidden = true;
     document.getElementById('backToAreasBtn').hidden = false;
     document.getElementById('visualizationBody').hidden = false;
 
@@ -679,6 +704,7 @@
     currentEntities = [];
     document.getElementById('areaHeading').textContent = 'בחרי אזור על המפה';
     document.getElementById('areaSelectHint').hidden = false;
+    document.getElementById('areaButtons').hidden = false;
     document.getElementById('backToAreasBtn').hidden = true;
     document.getElementById('visualizationBody').hidden = true;
   }
