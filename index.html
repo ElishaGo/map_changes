@@ -411,16 +411,11 @@
 <main>
 
   <section id="visualization">
-    <h2 id="areaHeading">בחרי אזור</h2>
+    <h2 id="areaHeading">בחרי אזור על המפה</h2>
     <p id="areaSelectHint">
-      בחרי אזור מהכפתורים למטה כדי לצפות בבניינים החדשים שאותרו בו, לפי תקופת השוואה.
+      המפה שלהלן מציגה את אזורי הפיילוט מתוארים. לחצי על אחד מהם כדי לצפות בבניינים
+      החדשים שאותרו בו, לפי תקופת השוואה.
     </p>
-
-    <div id="areaButtons" class="area-buttons">
-      <button type="button" class="area-btn" onclick="selectArea('נאחלין')">נחלין</button>
-      <button type="button" class="area-btn" onclick="selectArea('עקרבא')">עקרבא</button>
-      <button type="button" class="area-btn" onclick="selectArea('עזון עתמה')">עזון עתמה</button>
-    </div>
 
     <p>
       בתוך אזור - הזיזו את המחוון כדי לעבור בין תקופות ההשוואה (כשיש יותר מאחת) - כל תקופה
@@ -629,7 +624,7 @@
       background: "1",
       center: combinedBounds(),
       level: AREAS_OVERVIEW_LEVEL,
-      visibleLayers: [],
+      visibleLayers: [AREAS_LAYER],
       layers: ALL_LAYERS,
       layersMode: 2,
       bgButton: true,
@@ -639,15 +634,19 @@
       onClick: function (e) {
         const pt = e && e.mapPoint;
         if (!pt) { console.warn('main map onClick fired without e.mapPoint', e); return; }
-        if (currentArea !== null) {
+        if (currentArea === null) {
+          const hit = findAreaAtPoint(pt.x, pt.y);
+          if (hit) selectArea(hit);
+        } else {
           handleMapClick(pt.x, pt.y);
         }
       },
       onLoad: function () {
-        // No private layer needs to be visible yet - area selection now
-        // happens via the plain HTML buttons above the map (#areaButtons),
-        // not by clicking a boundary layer on the map (that path proved
-        // unreliable and is no longer used).
+        try {
+          govmap.setVisibleLayers([AREAS_LAYER], []);
+        } catch (err) {
+          console.error('GovMap setVisibleLayers failed in onLoad:', err);
+        }
       },
       onError: function (e) {
         console.error('GovMap error', e);
@@ -664,7 +663,6 @@
 
     document.getElementById('areaHeading').textContent = config.displayName;
     document.getElementById('areaSelectHint').hidden = true;
-    document.getElementById('areaButtons').hidden = true;
     document.getElementById('backToAreasBtn').hidden = false;
     document.getElementById('visualizationBody').hidden = false;
 
@@ -712,7 +710,6 @@
     currentEntities = [];
     document.getElementById('areaHeading').textContent = 'בחרי אזור על המפה';
     document.getElementById('areaSelectHint').hidden = false;
-    document.getElementById('areaButtons').hidden = false;
     document.getElementById('backToAreasBtn').hidden = true;
     document.getElementById('visualizationBody').hidden = true;
   }
