@@ -1,0 +1,1104 @@
+<!--
+  Building-changes report template
+  =================================
+  Static HTML report meant for GitHub Pages, hosted at
+  https://elishago.github.io/map_changes/ (the GovMap token below is
+  registered for that exact domain). The map section uses the GovMap
+  JavaScript API (govmap.createMap) with an orthophoto background plus,
+  per year, a raster layer (bottom) and a delta/change vector layer
+  (top) - see YEARS_DATA further down for the current layer ids.
+
+  NOTE: this version includes the multi-area selector (choose-an-area
+  buttons, then drill into נחלין/עקרבא/עזון עתמה). Area selection is by
+  button (#areaButtons), not by clicking boundary shapes on the map -
+  there is no hardcoded boundary geometry in this file any more (see
+  AREAS_LAYER note below). Test only via the real deployed URL - GovMap's
+  token is domain-locked and 401s on every private-layer call from
+  file:///...
+
+  LAYER IDS: AREAS_LAYER/DELTA_LAYER below are layer_242214 (the 3 area
+  boundary polygons) and layer_242213 (the combined points/change layer),
+  confirmed live via direct WMS GetMap requests - both render real
+  content (layer_242214 draws the settlement outlines, layer_242213
+  draws real change points, and CQL_FILTER name=/diff_date= on it
+  correctly narrows to one area+period). The previous ids these were set
+  to (layer_242116 / layer_242108) resolved to valid-but-permanently-
+  empty layers - same request shape, zero features anywhere tested - so
+  if either constant ever needs to change again, verify the same way
+  (GetMap the layer directly, over a wide bbox, and look for actual
+  drawn content, not just a 200/valid-image response) before trusting a
+  new id.
+
+  NO HARDCODED BOUNDARY GEOMETRY: earlier versions kept a client-side
+  copy of each area's boundary ring (for point-in-polygon click
+  detection, before the button UI existed) and used it to compute map-
+  centering coordinates. Removed - AREAS_LAYER is GovMap's own live
+  boundary layer, and centering now comes from averaging each area's own
+  POLYGON_DATA points instead (see combinedCenter/areaCenterItm below).
+-->
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>הפרש תקופתי לאיתור מבנים חדשים</title>
+
+<!-- Load govmap.api.js live - never save a local copy (per GovMap docs) -->
+<script src="https://www.govmap.gov.il/govmap/api/govmap.api.js" defer onload="initGovMap()"></script>
+
+<!-- GovMap API token - registered for this site's domain only -->
+<script>
+  const GOVMAP_TOKEN = "1e4cbd17-40c6-47ae-a0df-1d5f59622d3d";
+</script>
+
+<style>
+  :root {
+    --ink: #1f2937;
+    --muted: #6b7280;
+    --line: #e5e7eb;
+    --accent: #2563eb;
+    --bg: #ffffff;
+    --surface: #f9fafb;
+    --surface-2: #f3f4f6;
+    --hover: #eef2ff;
+    --card-bg: #ffffff;
+    --compare-bg: #eef1f4;
+  }
+  [data-theme="dark"] {
+    --ink: #e5e7eb;
+    --muted: #9ca3af;
+    --line: #334155;
+    --accent: #60a5fa;
+    --bg: #0f172a;
+    --surface: #1e293b;
+    --surface-2: #253449;
+    --hover: #1e3a5f;
+    --card-bg: #1e293b;
+    --compare-bg: #1e293b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Segoe UI", Arial, sans-serif;
+    color: var(--ink);
+    background: var(--bg);
+    line-height: 1.7;
+    transition: background 0.2s ease, color 0.2s ease;
+  }
+  header {
+    padding: 56px 24px 40px;
+    border-bottom: 1px solid var(--line);
+    text-align: center;
+    position: relative;
+  }
+  .theme-toggle {
+    position: absolute;
+    top: 20px;
+    left: 24px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 14px;
+    border: 1px solid var(--line);
+    border-radius: 20px;
+    background: var(--surface);
+    color: var(--ink);
+    cursor: pointer;
+    font-size: 0.85rem;
+    font-family: inherit;
+  }
+  .theme-toggle:hover { background: var(--hover); }
+  header h1 {
+    margin: 0 0 8px;
+    font-size: 2rem;
+  }
+  header p.subtitle {
+    margin: 0;
+    color: var(--muted);
+    font-size: 1rem;
+  }
+  main {
+    max-width: 980px;
+    margin: 0 auto;
+    padding: 56px 32px 96px;
+  }
+  section {
+    margin-bottom: 64px;
+  }
+  section h2 {
+    font-size: 1.5rem;
+    border-right: 4px solid var(--accent);
+    padding-right: 14px;
+    margin-bottom: 20px;
+  }
+  section p {
+    color: var(--ink);
+    margin: 0 0 12px;
+  }
+  section p.placeholder {
+    color: var(--muted);
+    font-style: italic;
+  }
+  .meta-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 12px;
+  }
+  .meta-table td {
+    padding: 8px 12px;
+    border: 1px solid var(--line);
+  }
+  .meta-table td:first-child {
+    font-weight: 600;
+    width: 180px;
+    background: var(--surface);
+  }
+  #map {
+    width: 100%;
+    height: 420px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+  }
+  .period-count {
+    margin: 0 0 16px;
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: var(--ink);
+  }
+  .period-count strong {
+    color: var(--accent);
+  }
+  .legend {
+    display: flex;
+    gap: 24px;
+    margin: 0 0 28px;
+    font-size: 0.85rem;
+    color: var(--muted);
+    flex-wrap: wrap;
+  }
+  .legend span {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .legend i {
+    width: 14px;
+    height: 14px;
+    display: inline-block;
+    border-radius: 3px;
+  }
+
+  /* Year slider */
+  .year-slider {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin: 28px 0 20px;
+    padding: 16px 20px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+  }
+  .year-slider .year-label {
+    font-weight: 600;
+    min-width: 90px;
+    text-align: center;
+    color: var(--accent);
+  }
+  .year-slider input[type="range"] {
+    flex: 1;
+    accent-color: var(--accent);
+  }
+  .year-ticks {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.8rem;
+    color: var(--muted);
+    padding: 0 2px;
+    margin-top: -12px;
+    margin-bottom: 28px;
+  }
+
+  /* Map + polygon list, side by side */
+  .map-layout {
+    display: grid;
+    grid-template-columns: 1fr 200px;
+    gap: 24px;
+    align-items: start;
+    margin-bottom: 24px;
+  }
+  @media (max-width: 700px) {
+    .map-layout { grid-template-columns: 1fr; }
+  }
+  .polygon-panel {
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--surface);
+    height: 420px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .polygon-panel h3 {
+    font-size: 0.95rem;
+    margin: 0;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--line);
+    background: var(--surface-2);
+  }
+  .polygon-list {
+    overflow-y: auto;
+    flex: 1;
+  }
+  .polygon-item {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    width: 100%;
+    text-align: right;
+    padding: 10px 14px;
+    border: none;
+    border-bottom: 1px solid var(--line);
+    background: none;
+    cursor: pointer;
+    font-size: 0.88rem;
+    color: var(--ink);
+    font-family: inherit;
+  }
+  .polygon-item .item-title { font-weight: 600; }
+  .polygon-item .item-cat { font-size: 0.78rem; color: var(--muted); }
+  .polygon-item.active .item-cat { color: #e0e7ff; }
+  .polygon-item:hover { background: var(--hover); }
+  .polygon-item.active { background: var(--accent); color: #fff; font-weight: 600; }
+  .polygon-list .placeholder {
+    padding: 14px;
+    color: var(--muted);
+    font-style: italic;
+    font-size: 0.85rem;
+    margin: 0;
+  }
+
+  /* Before/after comparison panel */
+  .compare-panel {
+    margin-top: 24px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 20px;
+    background: var(--surface);
+  }
+  .compare-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+  }
+  .compare-id { margin: 0; font-size: 0.85rem; color: var(--muted); }
+  .compare-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .zoom-btn {
+    border: 1px solid var(--line);
+    background: var(--card-bg);
+    border-radius: 4px;
+    width: 30px;
+    height: 30px;
+    cursor: pointer;
+    font-size: 1rem;
+    color: var(--ink);
+    font-family: inherit;
+    line-height: 1;
+  }
+  .zoom-btn:hover { background: var(--surface-2); }
+  .zoom-btn:disabled { opacity: 0.4; cursor: default; }
+  .zoom-label {
+    font-size: 0.8rem;
+    color: var(--muted);
+    min-width: 28px;
+    text-align: center;
+  }
+  .area-buttons {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 24px;
+  }
+  .area-btn {
+    border: 2px solid var(--accent);
+    background: var(--card-bg);
+    color: var(--accent);
+    border-radius: 8px;
+    padding: 14px 28px;
+    font-size: 1rem;
+    font-weight: 700;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .area-btn:hover { background: var(--accent); color: #fff; }
+  .back-btn {
+    display: inline-block;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    border-radius: 6px;
+    padding: 8px 16px;
+    margin-bottom: 20px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    color: var(--accent);
+    font-family: inherit;
+    font-weight: 600;
+  }
+  .back-btn:hover { background: var(--hover); }
+  #areaSelectHint {
+    color: var(--muted);
+  }
+  .close-btn {
+    border: 1px solid var(--line);
+    background: var(--card-bg);
+    border-radius: 4px;
+    padding: 6px 12px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    color: var(--muted);
+    font-family: inherit;
+  }
+  .close-btn:hover { background: var(--surface-2); }
+  .compare-maps {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 16px;
+  }
+  .compare-map-label {
+    margin: 0 0 6px;
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: var(--ink);
+    text-align: center;
+  }
+  .compare-map {
+    width: 100%;
+    height: 320px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--compare-bg);
+    overflow: hidden;
+    position: relative;
+  }
+  .compare-map canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+    object-fit: cover;
+  }
+  .compare-map .compare-loading {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+  .compare-map.empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--muted);
+    font-size: 0.85rem;
+    text-align: center;
+    padding: 12px;
+  }
+
+  footer {
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.85rem;
+    padding: 24px;
+    border-top: 1px solid var(--line);
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <button type="button" class="theme-toggle" id="themeToggle" onclick="toggleTheme()">
+    <span id="themeIcon">🌙</span><span id="themeLabel">מצב כהה</span>
+  </button>
+  <h1>הפרש תקופתי לאיתור מבנים חדשים</h1>
+  <p class="subtitle">מעקב אחר שינויי בנייה על בסיס השוואת תצלומי אוויר</p>
+</header>
+
+<main>
+
+  <section id="visualization">
+    <h2 id="areaHeading">בחרי אזור</h2>
+    <p id="areaSelectHint">
+      בחרי אזור מהכפתורים למטה כדי לצפות בבניינים החדשים שאותרו בו, לפי תקופת השוואה.
+    </p>
+
+    <div id="areaButtons" class="area-buttons">
+      <button type="button" class="area-btn" onclick="selectArea('נאחלין')">אזור 1</button>
+      <button type="button" class="area-btn" onclick="selectArea('עקרבא')">אזור 2</button>
+      <button type="button" class="area-btn" onclick="selectArea('עזון עתמה')">אזור 3</button>
+    </div>
+
+    <p>
+      הזיזו את המחוון כדי לעבור בין תקופות ההשוואה (צמד שנים).
+      כל תקופה מציגה את המבנים החדשים שהתגלו בה.
+      ברשימה משמאל למפה מופיעים כל המבנים של התקופה הנבחרת.
+      לחיצה על איתור ברשימה פותחת למטה השוואה בין תצלומי האוויר של שתי השנים באותה תקופה, ממוקדת על הבניין שנבחר.
+    </p>
+
+    <button type="button" id="backToAreasBtn" class="back-btn" onclick="backToAreas()" hidden>
+      ← חזרה לבחירת אזור
+    </button>
+
+    <div id="yearSliderWrap" class="year-slider" hidden>
+      <span id="yearLabel" class="year-label" dir="ltr">2024–2025</span>
+      <input id="yearSlider" type="range" min="0" max="1" step="1" value="1"
+             oninput="setYear(this.value)" aria-label="בחירת תקופת השוואה" />
+    </div>
+
+    <div id="visualizationBody" hidden>
+      <p id="periodCount" class="period-count"></p>
+
+      <div class="legend">
+        <span><i style="background:#9ca3af;"></i> רקע: תצלום אוויר <span id="orthoYear" dir="ltr"></span></span>
+        <span><i style="background:#f87171;"></i> בניינים חדשים בתקופה הנבחרת (ברשימה ובהשוואה למטה)</span>
+      </div>
+    </div>
+
+    <div class="map-layout">
+      <div id="mapWrap" style="position: relative;">
+        <div id="map"></div>
+        <img id="deltaOverlay" style="position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; display: none;" alt="" />
+      </div>
+
+      <aside class="polygon-panel">
+        <h3>איתורים בתקופה הנבחרת</h3>
+        <div id="polygonList" class="polygon-list">
+          <p class="placeholder">בחרי אזור על המפה כדי לצפות באיתורים.</p>
+        </div>
+      </aside>
+    </div>
+
+    <div id="comparePanel" class="compare-panel" hidden>
+      <div class="compare-header">
+        <span id="compareTitle" class="compare-id"></span>
+        <div class="compare-controls">
+          <button type="button" class="zoom-btn" onclick="zoomCompare(-1)" aria-label="הקטן זום">－</button>
+          <span id="zoomLabel" class="zoom-label">1x</span>
+          <button type="button" class="zoom-btn" onclick="zoomCompare(1)" aria-label="הגדל זום">＋</button>
+          <button type="button" class="close-btn" onclick="closeComparison()">✕ סגירה</button>
+        </div>
+      </div>
+      <div class="compare-maps" id="compareMaps">
+        <!-- one column for the active year + one for the previous year (or an empty placeholder), built by JS -->
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  נוצר באמצעות GovMap API &middot; המרכז למיפוי ישראל
+</footer>
+
+<script>
+  // Theme toggle: respects a saved choice in localStorage, falling back
+  // to the OS-level prefers-color-scheme on first visit. Applied via a
+  // data-theme attribute on <html> so all CSS custom properties above
+  // switch together.
+  (function initTheme() {
+    const saved = localStorage.getItem('theme');
+    const theme = saved || 'dark';
+    applyTheme(theme);
+  })();
+
+  function applyTheme(theme) {
+    if (theme === 'dark') {
+      document.documentElement.setAttribute('data-theme', 'dark');
+      document.getElementById('themeIcon').textContent = '☀️';
+      document.getElementById('themeLabel').textContent = 'מצב בהיר';
+    } else {
+      document.documentElement.removeAttribute('data-theme');
+      document.getElementById('themeIcon').textContent = '🌙';
+      document.getElementById('themeLabel').textContent = 'מצב כהה';
+    }
+  }
+
+  function toggleTheme() {
+    const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    const next = isDark ? 'light' : 'dark';
+    localStorage.setItem('theme', next);
+    applyTheme(next);
+  }
+
+  const MAIN_MAP_ID = 'map';
+
+  const CLOUDFRONT_TILE_BASE = 'https://d3mbl8vufuvx6n.cloudfront.net/minhal_ez_bldg_changes/XYZ_setlment_2';
+  const COMPARE_TILE_ZOOM = 18;
+  const BASE_COMPARE_METERS_PER_PIXEL = 156543.03392804097 / Math.pow(2, COMPARE_TILE_ZOOM); // ~0.597 m/px
+
+  const ZOOM_LEVELS = [1, 1.5, 2, 3, 4, 6];
+  let zoomIndex = 0;
+  let lastCompareEntity = null;
+
+  const COMPARE_IMG_W = 640;
+  const COMPARE_IMG_H = 480;
+
+  const MAIN_MAP_LEVEL = 8;
+  const SELECT_MAP_LEVEL = 12;
+
+  const FALLBACK_CENTER = { x: 211447, y: 621816 };
+
+  const YEARS_DATA = [
+    { label: "2024", period: "2023–2024", diffDate: "2023 - 2024", delta: "layer_242213" },
+    { label: "2025", period: "2024–2025", diffDate: "2024 - 2025", delta: "layer_242213" }
+  ];
+
+  const AREAS_LAYER = "layer_242214";
+  const DELTA_LAYER = "layer_242213";
+
+  const AREA_CONFIG = {
+    "נאחלין": {
+      displayName: "נחלין",
+      periods: ["2024", "2025"],
+      base: {},
+      cloudfrontFolder: { "2024": "2024", "2025": "2025_new" }
+    },
+    "עקרבא": {
+      displayName: "עקרבא",
+      periods: ["2025"],
+      base: {},
+      cloudfrontFolder: {}
+    },
+    "עזון עתמה": {
+      displayName: "עזון עתמה",
+      periods: ["2025"],
+      base: {},
+      cloudfrontFolder: {}
+    }
+  };
+
+  const ALL_LAYERS = [AREAS_LAYER, DELTA_LAYER].concat(
+    Object.values(AREA_CONFIG).flatMap(function (a) { return Object.values(a.base); })
+  );
+
+  // Plain average of a set of {x,y} points (ITM/EPSG:2039, same system
+  // the main GovMap map and POLYGON_DATA's x/y use) - good enough for
+  // framing a map center, no GIS lib needed for that. Returns null on an
+  // empty/missing list so callers can fall back to FALLBACK_CENTER.
+  function averageCenter(points) {
+    if (!points || !points.length) return null;
+    let sx = 0, sy = 0;
+    points.forEach(function (p) { sx += p.x; sy += p.y; });
+    return { x: sx / points.length, y: sy / points.length };
+  }
+
+  // Center for the initial "choose an area" overview: the average of
+  // every detected point across every configured area, in ITM. Replaces
+  // an earlier hardcoded-boundary-bounds version - see the top-of-file
+  // note on why there's no boundary geometry baked into this file.
+  function combinedCenter() {
+    const all = Object.values(POLYGON_DATA).flatMap(function (byPeriod) {
+      return Object.values(byPeriod).flat();
+    });
+    return averageCenter(all) || FALLBACK_CENTER;
+  }
+
+  const POLYGON_DATA = {"עקרבא":{"2024":[],"2025":[{"id":1,"x":232246.2,"y":670932.2,"mx":3934029.18,"my":3780612.6,"cat":"מבנה חדש"},{"id":2,"x":232754.5,"y":670896.4,"mx":3934628.88,"my":3780569.4,"cat":"מבנה חדש"},{"id":3,"x":232351.2,"y":670848.3,"mx":3934152.97,"my":3780513.06,"cat":"מבנה חדש"},{"id":4,"x":232394.5,"y":670801.3,"mx":3934203.98,"my":3780457.31,"cat":"מבנה חדש"},{"id":5,"x":232387.1,"y":670801.3,"mx":3934195.19,"my":3780457.23,"cat":"מבנה שנהרס"},{"id":6,"x":232923.6,"y":670611.6,"mx":3934827.82,"my":3780231.52,"cat":"מבנה חדש"},{"id":7,"x":233214.4,"y":670495.7,"mx":3935170.71,"my":3780093.72,"cat":"מבנה שנהרס"},{"id":8,"x":232383.1,"y":670453.5,"mx":3934189.98,"my":3780045.0,"cat":"מבנה חדש"},{"id":9,"x":233181.9,"y":670383.6,"mx":3935132.2,"my":3779960.9,"cat":"מבנה חדש"},{"id":10,"x":231692.1,"y":670337.1,"mx":3933374.65,"my":3779908.03,"cat":"מבנה חדש"},{"id":11,"x":231808.3,"y":670257.9,"mx":3933511.61,"my":3779813.96,"cat":"מבנה חדש"},{"id":12,"x":232098.1,"y":670233.1,"mx":3933853.49,"my":3779784.15,"cat":"מבנה חדש"},{"id":13,"x":231874.2,"y":670212.1,"mx":3933589.28,"my":3779759.55,"cat":"מבנה חדש"},{"id":14,"x":231679.8,"y":670210.7,"mx":3933360.0,"my":3779758.23,"cat":"מבנה חדש"},{"id":15,"x":233390.3,"y":670201.8,"mx":3935377.76,"my":3779745.09,"cat":"מבנה חדש"},{"id":16,"x":232081.1,"y":670081.7,"mx":3933833.2,"my":3779604.76,"cat":"מבנה חדש"},{"id":17,"x":232472.8,"y":670035.6,"mx":3934295.15,"my":3779549.47,"cat":"מבנה שנהרס"},{"id":18,"x":232905.2,"y":670016.1,"mx":3934805.23,"my":3779525.7,"cat":"מבנה שנהרס"},{"id":19,"x":232182.0,"y":669957.9,"mx":3933952.09,"my":3779457.79,"cat":"מבנה חדש"},{"id":20,"x":231693.9,"y":669888.9,"mx":3933376.16,"my":3779376.73,"cat":"מבנה חדש"},{"id":21,"x":232288.3,"y":669886.4,"mx":3934077.32,"my":3779372.91,"cat":"מבנה חדש"},{"id":22,"x":231970.9,"y":669868.8,"mx":3933702.9,"my":3779352.56,"cat":"מבנה חדש"},{"id":23,"x":232519.6,"y":669868.6,"mx":3934350.14,"my":3779351.52,"cat":"חשד למבנה חדש"},{"id":24,"x":233441.5,"y":669816.0,"mx":3935437.5,"my":3779287.67,"cat":"מבנה חדש"},{"id":25,"x":231818.5,"y":669701.0,"mx":3933522.87,"my":3779153.82,"cat":"מבנה חדש"},{"id":26,"x":232794.8,"y":669623.9,"mx":3934674.4,"my":3779061.0,"cat":"מבנה חדש"},{"id":27,"x":232795.5,"y":669581.8,"mx":3934675.2,"my":3779011.1,"cat":"מבנה חדש"},{"id":28,"x":231880.6,"y":669578.0,"mx":3933595.96,"my":3779007.98,"cat":"מבנה חדש"},{"id":29,"x":232098.3,"y":669438.9,"mx":3933852.58,"my":3778842.72,"cat":"מבנה חדש"},{"id":30,"x":233153.9,"y":669432.8,"mx":3935097.65,"my":3778833.88,"cat":"מבנה חדש"},{"id":31,"x":232888.1,"y":669416.0,"mx":3934784.18,"my":3778814.46,"cat":"מבנה חדש"},{"id":32,"x":233233.6,"y":669411.2,"mx":3935191.65,"my":3778808.14,"cat":"מבנה חדש"},{"id":33,"x":232827.1,"y":669411.1,"mx":3934712.14,"my":3778808.78,"cat":"מבנה חדש"},{"id":34,"x":232619.3,"y":669341.9,"mx":3934466.96,"my":3778726.99,"cat":"מבנה חדש"},{"id":35,"x":232561.4,"y":669327.0,"mx":3934398.62,"my":3778709.41,"cat":"מבנה חדש"},{"id":36,"x":233042.6,"y":669153.2,"mx":3934966.01,"my":3778502.74,"cat":"מבנה חדש"}]},"עזון עתמה":{"2024":[],"2025":[{"id":1,"x":201152.6,"y":670502.3,"mx":3897347.65,"my":3780093.06,"cat":"חשד למבנה חדש"},{"id":2,"x":200865.5,"y":670270.9,"mx":3897009.5,"my":3779818.17,"cat":"מבנה חדש"},{"id":3,"x":200942.7,"y":670061.1,"mx":3897100.98,"my":3779569.68,"cat":"מבנה חדש"},{"id":4,"x":200950.8,"y":670044.4,"mx":3897110.58,"my":3779549.86,"cat":"מבנה חדש"},{"id":5,"x":201689.7,"y":670042.0,"mx":3897982.18,"my":3779548.58,"cat":"מבנה חדש"},{"id":6,"x":202252.9,"y":669982.1,"mx":3898646.71,"my":3779478.68,"cat":"מבנה שנהרס"},{"id":7,"x":202078.6,"y":669930.1,"mx":3898441.23,"my":3779416.69,"cat":"מבנה חדש"},{"id":8,"x":201576.7,"y":669815.1,"mx":3897849.42,"my":3779279.34,"cat":"חשד למבנה חדש"},{"id":9,"x":202328.6,"y":669794.3,"mx":3898736.43,"my":3779256.27,"cat":"מבנה חדש"},{"id":10,"x":201897.7,"y":669711.2,"mx":3898228.28,"my":3779156.93,"cat":"מבנה חדש"},{"id":11,"x":201643.3,"y":669627.1,"mx":3897928.29,"my":3779056.71,"cat":"מבנה חדש"},{"id":12,"x":201604.6,"y":669613.1,"mx":3897882.77,"my":3779040.0,"cat":"מבנה חדש"},{"id":13,"x":201944.9,"y":669479.8,"mx":3898284.4,"my":3778882.77,"cat":"מבנה חדש"},{"id":14,"x":202026.4,"y":669270.0,"mx":3898381.02,"my":3778634.19,"cat":"מבנה חדש"},{"id":15,"x":202049.5,"y":669264.4,"mx":3898408.25,"my":3778627.58,"cat":"מבנה חדש"}]},"נאחלין":{"2024":[{"id":1,"x":211423.6,"y":622060.7,"mx":3909508.9,"my":3722820.81,"cat":"מבנה חדש"},{"id":2,"x":211720.8,"y":622030.7,"mx":3909857.89,"my":3722785.77,"cat":"מבנה חדש"},{"id":3,"x":211768.9,"y":621950.2,"mx":3909914.47,"my":3722690.83,"cat":"מבנה חדש"},{"id":4,"x":211610.3,"y":621925.3,"mx":3909728.25,"my":3722661.28,"cat":"מבנה חדש"},{"id":5,"x":211245.9,"y":621890.3,"mx":3909300.41,"my":3722619.62,"cat":"מבנה חדש"},{"id":6,"x":211614.4,"y":621869.2,"mx":3909733.16,"my":3722595.12,"cat":"חשד למבנה חדש"},{"id":7,"x":211264.8,"y":621862.9,"mx":3909322.61,"my":3722587.33,"cat":"מבנה חדש"},{"id":8,"x":211510.1,"y":621751.6,"mx":3909610.73,"my":3722456.26,"cat":"מבנה חדש"},{"id":9,"x":211126.9,"y":621706.4,"mx":3909160.85,"my":3722402.55,"cat":"מבנה חדש"},{"id":10,"x":210601.3,"y":621639.7,"mx":3908543.87,"my":3722323.4,"cat":"מבנה חדש"},{"id":11,"x":210582.3,"y":621637.1,"mx":3908521.51,"my":3722320.22,"cat":"מבנה חדש"},{"id":12,"x":210553.6,"y":621620.1,"mx":3908487.86,"my":3722300.21,"cat":"מבנה חדש"},{"id":13,"x":211836.1,"y":621602.3,"mx":3909993.66,"my":3722280.39,"cat":"מבנה חדש"},{"id":14,"x":210841.5,"y":621571.4,"mx":3908825.88,"my":3722243.03,"cat":"מבנה חדש"},{"id":15,"x":211193.6,"y":621564.4,"mx":3909239.35,"my":3722235.08,"cat":"חשד למבנה חדש"},{"id":16,"x":210667.7,"y":621538.8,"mx":3908621.87,"my":3722204.35,"cat":"חשד למבנה חדש"},{"id":17,"x":211294.8,"y":621520.7,"mx":3909358.23,"my":3722183.62,"cat":"מבנה חדש"},{"id":18,"x":211151.9,"y":621507.4,"mx":3909190.39,"my":3722167.82,"cat":"מבנה חדש"},{"id":19,"x":210509.9,"y":621461.9,"mx":3908436.69,"my":3722113.54,"cat":"מבנה חדש"},{"id":20,"x":210504.6,"y":621443.9,"mx":3908430.5,"my":3722092.23,"cat":"מבנה חדש"},{"id":21,"x":211632.5,"y":621428.5,"mx":3909754.76,"my":3722075.15,"cat":"חשד למבנה חדש"},{"id":22,"x":210581.2,"y":621421.3,"mx":3908520.46,"my":3722065.61,"cat":"מבנה חדש"},{"id":23,"x":210526.0,"y":621386.1,"mx":3908455.65,"my":3722024.03,"cat":"מבנה חדש"},{"id":24,"x":211713.6,"y":621381.5,"mx":3909850.03,"my":3722019.77,"cat":"חשד למבנה חדש"},{"id":25,"x":212089.7,"y":621358.9,"mx":3910291.58,"my":3721993.45,"cat":"מבנה חדש"},{"id":26,"x":210649.3,"y":621304.4,"mx":3908600.54,"my":3721927.77,"cat":"מבנה חדש"},{"id":27,"x":210733.0,"y":621296.9,"mx":3908698.79,"my":3721919.08,"cat":"מבנה חדש"},{"id":28,"x":210751.0,"y":621294.8,"mx":3908719.91,"my":3721916.62,"cat":"מבנה חדש"},{"id":29,"x":211915.8,"y":621285.5,"mx":3910087.52,"my":3721906.65,"cat":"מבנה חדש"},{"id":30,"x":211980.6,"y":621266.3,"mx":3910163.55,"my":3721884.07,"cat":"חשד למבנה חדש"},{"id":31,"x":211807.7,"y":621265.6,"mx":3909960.61,"my":3721883.15,"cat":"מבנה חדש"},{"id":32,"x":211044.4,"y":621264.2,"mx":3909064.39,"my":3721880.75,"cat":"מבנה חדש"},{"id":33,"x":211859.7,"y":621254.3,"mx":3910021.66,"my":3721869.83,"cat":"חשד למבנה חדש"},{"id":34,"x":211005.2,"y":621249.0,"mx":3909018.39,"my":3721862.8,"cat":"מבנה חדש"},{"id":35,"x":212278.9,"y":621214.5,"mx":3910513.83,"my":3721823.23,"cat":"מבנה חדש"},{"id":36,"x":211952.4,"y":621190.1,"mx":3910130.57,"my":3721794.22,"cat":"מבנה חדש"},{"id":37,"x":210841.4,"y":621166.2,"mx":3908826.18,"my":3721764.96,"cat":"חשד למבנה חדש"},{"id":38,"x":212160.1,"y":621139.2,"mx":3910374.46,"my":3721734.32,"cat":"חשד למבנה חדש"},{"id":39,"x":211543.6,"y":621069.8,"mx":3909650.7,"my":3721651.87,"cat":"מבנה חדש"},{"id":40,"x":211505.3,"y":621060.4,"mx":3909605.78,"my":3721640.72,"cat":"מבנה חדש"},{"id":41,"x":211057.3,"y":621057.3,"mx":3909079.73,"my":3721636.69,"cat":"מבנה חדש"},{"id":42,"x":211523.7,"y":621044.6,"mx":3909627.37,"my":3721622.14,"cat":"מבנה חדש"},{"id":43,"x":211434.5,"y":621011.4,"mx":3909522.7,"my":3721582.93,"cat":"מבנה חדש"},{"id":44,"x":211077.1,"y":621008.7,"mx":3909103.07,"my":3721579.38,"cat":"מבנה חדש"},{"id":45,"x":211811.7,"y":620960.7,"mx":3909965.5,"my":3721523.4,"cat":"מבנה חדש"},{"id":46,"x":211226.8,"y":620959.9,"mx":3909278.9,"my":3721521.91,"cat":"חשד למבנה חדש"}],"2025":[{"id":1,"x":211875.6,"y":621732.5,"mx":3910039.95,"my":3722433.99,"cat":"מבנה חדש"},{"id":2,"x":211605.2,"y":621724.6,"mx":3909722.46,"my":3722424.52,"cat":"מבנה חדש"},{"id":3,"x":210469.2,"y":621534.1,"mx":3908388.84,"my":3722198.58,"cat":"מבנה חדש"},{"id":4,"x":210585.3,"y":621477.8,"mx":3908525.21,"my":3722132.32,"cat":"מבנה חדש"},{"id":5,"x":210710.6,"y":621306.7,"mx":3908672.47,"my":3721930.64,"cat":"מבנה חדש"},{"id":6,"x":211085.6,"y":621281.7,"mx":3909112.74,"my":3721901.45,"cat":"חשד למבנה חדש"},{"id":7,"x":211452.8,"y":621070.9,"mx":3909544.11,"my":3721653.07,"cat":"מבנה חדש"},{"id":8,"x":211219.7,"y":621025.7,"mx":3909270.42,"my":3721599.51,"cat":"מבנה חדש"}]}};
+
+  let currentArea = null;
+  let currentPeriodIndex = 0;
+  let currentEntities = [];
+  let selectedIndex = -1;
+
+  const AREAS_OVERVIEW_LEVEL = 5;
+
+  function periodMeta(label) {
+    return YEARS_DATA.find(function (y) { return y.label === label; });
+  }
+
+  function initGovMap() {
+    govmap.createMap(MAIN_MAP_ID, {
+      token: GOVMAP_TOKEN,
+      background: "1",
+      center: combinedCenter(),
+      level: AREAS_OVERVIEW_LEVEL,
+      visibleLayers: [],
+      layers: ALL_LAYERS,
+      layersMode: 2,
+      bgButton: true,
+      zoomButtons: true,
+      showXY: false,
+      identifyOnClick: false,
+      onClick: function (e) {
+        const pt = e && e.mapPoint;
+        if (!pt) { console.warn('main map onClick fired without e.mapPoint', e); return; }
+        if (currentArea !== null) {
+          handleMapClick(pt.x, pt.y);
+        }
+      },
+      onLoad: function () {
+        // Area selection happens via the buttons (#areaButtons) - not
+        // via native GovMap layer visibility, which requires the layer
+        // be shared to this specific account (see chat).
+      },
+      onError: function (e) {
+        console.error('GovMap error', e);
+      }
+    });
+  }
+
+  // Main-map buildings overlay: instead of relying on GovMap's native
+  // Building markers on the main map were tried as a WMS overlay image
+  // (see chat) but a static image can't track GovMap's own zoom/pan -
+  // it stays fixed while the map underneath moves, which reads as
+  // misaligned/wrong once the user interacts with the map. Removed;
+  // building locations are shown via the polygon list and the
+  // before/after comparison images below instead, both of which
+  // render correctly per-selection.
+
+  // Building markers on the main map: a WMS overlay image (same
+  // mechanism as the comparison images) shown over #map when an area
+  // is selected. Known limitation: it's a static image, so it doesn't
+  // track GovMap's own zoom/pan - it can look misaligned once the user
+  // zooms. Hidden while a specific finding is open (selectPolygon)
+  // since the comparison below is the focus then; shown again on close.
+  const AREA_OVERLAY_METERS_PER_PIXEL = 5;
+
+  function areaCenterMerc(areaKey, periodLabel) {
+    const byPeriod = POLYGON_DATA[areaKey] && POLYGON_DATA[areaKey][periodLabel];
+    const all = (byPeriod && byPeriod.length) ? byPeriod :
+      Object.values(POLYGON_DATA[areaKey] || {}).flat();
+    if (!all.length) return null;
+    let sx = 0, sy = 0;
+    all.forEach(function (e) { sx += e.mx; sy += e.my; });
+    return { mx: sx / all.length, my: sy / all.length };
+  }
+
+  // Same fallback-flatten pattern as areaCenterMerc above, but in ITM
+  // (x/y) for the main GovMap map's own zoomToXY/setMapMarker calls -
+  // used by selectArea below to frame an area on entry, replacing the
+  // old hardcoded-boundary-bounds center (see top-of-file note).
+  function areaCenterItm(areaKey, periodLabel) {
+    const byPeriod = POLYGON_DATA[areaKey] && POLYGON_DATA[areaKey][periodLabel];
+    const all = (byPeriod && byPeriod.length) ? byPeriod :
+      Object.values(POLYGON_DATA[areaKey] || {}).flat();
+    return averageCenter(all);
+  }
+
+  function updateMapOverlay() {
+    const img = document.getElementById('deltaOverlay');
+    if (!currentArea) { img.style.display = 'none'; return; }
+
+    const config = AREA_CONFIG[currentArea];
+    const label = config.periods[currentPeriodIndex];
+    const meta = periodMeta(label);
+    const center = areaCenterMerc(currentArea, label);
+    if (!center) { img.style.display = 'none'; return; }
+
+    const mapEl = document.getElementById(MAIN_MAP_ID);
+    const w = mapEl.clientWidth || 640;
+    const h = mapEl.clientHeight || 420;
+
+    img.src = buildDeltaOverlayUrl(DELTA_LAYER, center.mx, center.my, meta.diffDate, {
+      width: w, height: h, metersPerPixel: AREA_OVERLAY_METERS_PER_PIXEL
+    });
+    img.style.display = 'block';
+  }
+
+  function selectArea(areaKey) {
+    const config = AREA_CONFIG[areaKey];
+    if (!config) return;
+
+    currentArea = areaKey;
+    currentPeriodIndex = config.periods.length - 1;
+
+    document.getElementById('areaHeading').textContent = config.displayName;
+    document.getElementById('areaSelectHint').hidden = true;
+    document.getElementById('areaButtons').hidden = true;
+    document.getElementById('backToAreasBtn').hidden = false;
+    document.getElementById('visualizationBody').hidden = false;
+
+    const hasMultiplePeriods = config.periods.length > 1;
+    document.getElementById('yearSliderWrap').hidden = !hasMultiplePeriods;
+    document.getElementById('yearSlider').max = String(config.periods.length - 1);
+    document.getElementById('yearSlider').value = String(currentPeriodIndex);
+
+    const label = config.periods[currentPeriodIndex];
+    const center = areaCenterItm(areaKey, label) || FALLBACK_CENTER;
+    const base = config.base[label];
+    try {
+      govmap.setVisibleLayers(
+        base ? [base, DELTA_LAYER] : [DELTA_LAYER],
+        [AREAS_LAYER]
+      );
+      govmap.zoomToXY({ x: center.x, y: center.y, level: MAIN_MAP_LEVEL, marker: false, mapDivId: MAIN_MAP_ID });
+    } catch (err) {
+      console.error('GovMap layer/zoom call failed in selectArea:', err);
+    }
+
+    updatePeriodUi();
+    refreshPolygonList();
+    updateMapOverlay();
+  }
+
+  function backToAreas() {
+    closeComparison();
+    try {
+      if (currentArea) {
+        const config = AREA_CONFIG[currentArea];
+        const label = config.periods[currentPeriodIndex];
+        const base = config.base[label];
+        govmap.setVisibleLayers([AREAS_LAYER], base ? [base, DELTA_LAYER] : [DELTA_LAYER]);
+      }
+      govmap.clearMapMarker({ mapDivId: MAIN_MAP_ID });
+      const overview = combinedCenter();
+      govmap.zoomToXY({ x: overview.x, y: overview.y, level: AREAS_OVERVIEW_LEVEL, marker: false, mapDivId: MAIN_MAP_ID });
+    } catch (err) {
+      console.error('GovMap call failed in backToAreas:', err);
+    }
+
+    currentArea = null;
+    selectedIndex = -1;
+    currentEntities = [];
+    document.getElementById('areaHeading').textContent = 'בחרי אזור';
+    document.getElementById('areaSelectHint').hidden = false;
+    document.getElementById('areaButtons').hidden = false;
+    document.getElementById('deltaOverlay').style.display = 'none';
+    document.getElementById('backToAreasBtn').hidden = true;
+    document.getElementById('visualizationBody').hidden = true;
+  }
+
+  function setYear(index) {
+    index = Number(index);
+    if (index === currentPeriodIndex) return;
+
+    const config = AREA_CONFIG[currentArea];
+    const prevBase = config.base[config.periods[currentPeriodIndex]];
+    currentPeriodIndex = index;
+    const nextBase = config.base[config.periods[currentPeriodIndex]];
+
+    if (prevBase !== nextBase) {
+      try {
+        govmap.setVisibleLayers(
+          nextBase ? [nextBase] : [],
+          prevBase ? [prevBase] : []
+        );
+      } catch (err) {
+        console.error('GovMap setVisibleLayers failed in setYear:', err);
+      }
+    }
+
+    updatePeriodUi();
+    refreshPolygonList();
+    updateMapOverlay();
+  }
+
+  function updatePeriodUi() {
+    const config = AREA_CONFIG[currentArea];
+    const label = config.periods[currentPeriodIndex];
+    const meta = periodMeta(label);
+    document.getElementById('yearLabel').textContent = meta.period;
+    document.getElementById('orthoYear').textContent = '(' + label + ')';
+  }
+
+  function escapeHtml(value) {
+    return String(value).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  function refreshPolygonList() {
+    closeComparison();
+    selectedIndex = -1;
+
+    const config = AREA_CONFIG[currentArea];
+    const label = config.periods[currentPeriodIndex];
+    const meta = periodMeta(label);
+    currentEntities = (POLYGON_DATA[currentArea] && POLYGON_DATA[currentArea][label]) || [];
+
+    const countEl = document.getElementById('periodCount');
+    countEl.innerHTML = 'בתקופה <strong dir="ltr">' + escapeHtml(meta.period) + '</strong> אותרו <strong>' +
+                         currentEntities.length + '</strong> מבנים חדשים';
+
+    const listEl = document.getElementById('polygonList');
+
+    if (!currentEntities.length) {
+      listEl.innerHTML = '<p class="placeholder">אין נתוני איתורים עבור ' + escapeHtml(meta.period) +
+                          ' באזור זה.</p>';
+      return;
+    }
+
+    listEl.innerHTML = currentEntities.map(function (entity, i) {
+      return '<button type="button" class="polygon-item" onclick="selectPolygon(' + i + ')">' +
+             '<span class="item-title">איתור מספר <bdi>' + escapeHtml(entity.id) + '</bdi></span>' +
+             '<span class="item-cat">' + escapeHtml(entity.cat || '') + '</span>' +
+             '</button>';
+    }).join('');
+  }
+
+  function selectPolygon(index) {
+    const entity = currentEntities[index];
+    if (!entity) return;
+
+    selectedIndex = index;
+    document.querySelectorAll('.polygon-item').forEach(function (btn, i) {
+      btn.classList.toggle('active', i === index);
+    });
+
+    const center = { x: entity.x, y: entity.y };
+
+    govmap.setMapMarker({ x: center.x, y: center.y, mapDivId: MAIN_MAP_ID });
+    govmap.zoomToXY({ x: center.x, y: center.y, level: SELECT_MAP_LEVEL, marker: false, mapDivId: MAIN_MAP_ID });
+
+    openComparison(entity);
+    document.getElementById('deltaOverlay').style.display = 'none';
+  }
+
+  const CLICK_RADIUS_M = 30;
+
+  function handleMapClick(x, y) {
+    if (!currentEntities.length) return;
+
+    let bestIndex = -1;
+    let bestDist = Infinity;
+    currentEntities.forEach(function (entity, i) {
+      const dx = entity.x - x;
+      const dy = entity.y - y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < bestDist) { bestDist = dist; bestIndex = i; }
+    });
+
+    if (bestIndex >= 0 && bestDist <= CLICK_RADIUS_M) {
+      selectPolygon(bestIndex);
+    }
+  }
+
+  function loadImage(url) {
+    return new Promise(function (resolve) {
+      const img = new Image();
+      img.onload = function () { resolve(img); };
+      img.onerror = function () { resolve(null); };
+      img.src = url;
+    });
+  }
+
+  function buildDeltaOverlayUrl(layerId, mx, my, diffDate, opts) {
+    const w = (opts && opts.width) || COMPARE_IMG_W;
+    const h = (opts && opts.height) || COMPARE_IMG_H;
+    const mpp = (opts && opts.metersPerPixel) || BASE_COMPARE_METERS_PER_PIXEL;
+    const halfWm = (w / 2) * mpp;
+    const halfHm = (h / 2) * mpp;
+    const bbox = [mx - halfWm, my - halfHm, mx + halfWm, my + halfHm].join(',');
+    const paramsObj = {
+      service: 'WMS', version: '1.3.0', REQUEST: 'GetMap', FORMAT: 'image/png',
+      STYLES: 'govmap:' + layerId, TRANSPARENT: 'TRUE', LAYERS: 'govmap:' + layerId,
+      CRS: 'EPSG:3857', WIDTH: String(w), HEIGHT: String(h), BBOX: bbox
+    };
+    if (diffDate) {
+      paramsObj.CQL_FILTER = "name='" + currentArea + "' AND diff_date='" + diffDate + "'";
+    }
+    const params = new URLSearchParams(paramsObj);
+    return 'https://www.govmap.gov.il/api/geoserver/ows?' + params.toString();
+  }
+
+  const WORLD_HALF = 20037508.342789244;
+  const TILE_SIZE = 256;
+
+  function mercToTilePixel(mx, my, z) {
+    const n = TILE_SIZE * Math.pow(2, z);
+    return {
+      px: (mx + WORLD_HALF) / (2 * WORLD_HALF) * n,
+      py: (WORLD_HALF - my) / (2 * WORLD_HALF) * n
+    };
+  }
+
+  async function drawBackgroundTiles(ctx, yearFolder, centerMx, centerMy, outW, outH) {
+    const z = COMPARE_TILE_ZOOM;
+    const halfWm = (outW / 2) * BASE_COMPARE_METERS_PER_PIXEL;
+    const halfHm = (outH / 2) * BASE_COMPARE_METERS_PER_PIXEL;
+    const topLeft = mercToTilePixel(centerMx - halfWm, centerMy + halfHm, z);
+    const bottomRight = mercToTilePixel(centerMx + halfWm, centerMy - halfHm, z);
+
+    const txStart = Math.floor(topLeft.px / TILE_SIZE);
+    const txEnd = Math.floor(bottomRight.px / TILE_SIZE);
+    const tyStart = Math.floor(topLeft.py / TILE_SIZE);
+    const tyEnd = Math.floor(bottomRight.py / TILE_SIZE);
+
+    const jobs = [];
+    for (let tx = txStart; tx <= txEnd; tx++) {
+      for (let ty = tyStart; ty <= tyEnd; ty++) {
+        const url = CLOUDFRONT_TILE_BASE + '/' + yearFolder + '/' + z + '/' + tx + '/' + ty + '.png';
+        const destX = tx * TILE_SIZE - topLeft.px;
+        const destY = ty * TILE_SIZE - topLeft.py;
+        jobs.push(loadImage(url).then(function (img) {
+          if (img) ctx.drawImage(img, destX, destY);
+        }));
+      }
+    }
+    await Promise.all(jobs);
+  }
+
+  async function renderComparisonImage(divId, yearEntry, entity) {
+    const wrap = document.getElementById(divId);
+    if (!wrap) return;
+
+    const srcCanvas = document.createElement('canvas');
+    srcCanvas.width = COMPARE_IMG_W;
+    srcCanvas.height = COMPARE_IMG_H;
+    const srcCtx = srcCanvas.getContext('2d');
+    srcCtx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--compare-bg').trim() || '#eef1f4';
+    srcCtx.fillRect(0, 0, COMPARE_IMG_W, COMPARE_IMG_H);
+
+    const yearFolder = yearEntry.cloudfrontFolder;
+    if (yearFolder) {
+      await drawBackgroundTiles(srcCtx, yearFolder, entity.mx, entity.my, COMPARE_IMG_W, COMPARE_IMG_H);
+    }
+
+    if (!wrap.isConnected) return;
+
+    const overlayImg = await loadImage(buildDeltaOverlayUrl(DELTA_LAYER, entity.mx, entity.my, yearEntry.diffDate));
+
+    if (!wrap.isConnected) return;
+
+    if (overlayImg) {
+      srcCtx.drawImage(overlayImg, 0, 0, COMPARE_IMG_W, COMPARE_IMG_H);
+    }
+
+    const zoom = ZOOM_LEVELS[zoomIndex];
+    const canvas = document.createElement('canvas');
+    canvas.width = COMPARE_IMG_W;
+    canvas.height = COMPARE_IMG_H;
+    const ctx = canvas.getContext('2d');
+    const cropW = COMPARE_IMG_W / zoom;
+    const cropH = COMPARE_IMG_H / zoom;
+    const cropX = (COMPARE_IMG_W - cropW) / 2;
+    const cropY = (COMPARE_IMG_H - cropH) / 2;
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(srcCanvas, cropX, cropY, cropW, cropH, 0, 0, COMPARE_IMG_W, COMPARE_IMG_H);
+
+    const cx = COMPARE_IMG_W / 2, cy = COMPARE_IMG_H / 2;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 9, 0, 2 * Math.PI);
+    ctx.fillStyle = 'rgba(37, 99, 235, 0.25)';
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(cx, cy, 5, 0, 2 * Math.PI);
+    ctx.fillStyle = '#2563eb';
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#ffffff';
+    ctx.stroke();
+
+    wrap.innerHTML = '';
+    wrap.appendChild(canvas);
+
+    if (!overlayImg) {
+      const note = document.createElement('div');
+      note.className = 'compare-loading';
+      note.textContent = 'שכבת השינויים לא נטענה';
+      wrap.appendChild(note);
+    }
+  }
+
+  function areaPeriodEntry(offset) {
+    const config = AREA_CONFIG[currentArea];
+    const idx = currentPeriodIndex + offset;
+    if (idx < 0 || idx >= config.periods.length) return null;
+    const label = config.periods[idx];
+    const meta = periodMeta(label);
+    return {
+      label: label,
+      period: meta.period,
+      diffDate: meta.diffDate,
+      cloudfrontFolder: config.cloudfrontFolder[label] || null
+    };
+  }
+
+  function openComparison(entity) {
+    document.getElementById('comparePanel').hidden = false;
+    document.getElementById('compareTitle').innerHTML = 'איתור מספר <bdi>' + escapeHtml(entity.id) + '</bdi>';
+
+    lastCompareEntity = entity;
+    zoomIndex = 0;
+    updateZoomControls();
+
+    const container = document.getElementById('compareMaps');
+    const newYear = areaPeriodEntry(0);
+    const oldYear = areaPeriodEntry(-1);
+
+    container.innerHTML = compareColumnHtml('mapYNew', newYear.label) +
+      (oldYear ? compareColumnHtml('mapYOld', oldYear.label) : emptyCompareColumnHtml());
+
+    renderComparisonImage('mapYNew', newYear, entity);
+    if (oldYear) {
+      renderComparisonImage('mapYOld', oldYear, entity);
+    }
+  }
+
+  function zoomCompare(direction) {
+    const next = zoomIndex + direction;
+    if (next < 0 || next >= ZOOM_LEVELS.length || !lastCompareEntity) return;
+    zoomIndex = next;
+    updateZoomControls();
+
+    const newYear = areaPeriodEntry(0);
+    const oldYear = areaPeriodEntry(-1);
+    renderComparisonImage('mapYNew', newYear, lastCompareEntity);
+    if (oldYear) {
+      renderComparisonImage('mapYOld', oldYear, lastCompareEntity);
+    }
+  }
+
+  function updateZoomControls() {
+    document.getElementById('zoomLabel').textContent = ZOOM_LEVELS[zoomIndex] + 'x';
+    document.querySelector('.zoom-btn[aria-label="הקטן זום"]').disabled = zoomIndex === 0;
+    document.querySelector('.zoom-btn[aria-label="הגדל זום"]').disabled = zoomIndex === ZOOM_LEVELS.length - 1;
+  }
+
+  const WHEEL_THROTTLE_MS = 220;
+  let lastWheelZoomAt = 0;
+  document.getElementById('compareMaps').addEventListener('wheel', function (e) {
+    if (!lastCompareEntity) return;
+    e.preventDefault();
+    const now = Date.now();
+    if (now - lastWheelZoomAt < WHEEL_THROTTLE_MS) return;
+    lastWheelZoomAt = now;
+    zoomCompare(e.deltaY < 0 ? 1 : -1);
+  }, { passive: false });
+
+  function compareColumnHtml(divId, label) {
+    return '<div class="compare-map-col">' +
+           '<p class="compare-map-label" dir="ltr">' + escapeHtml(label) + '</p>' +
+           '<div id="' + divId + '" class="compare-map"><div class="compare-loading">טוען...</div></div>' +
+           '</div>';
+  }
+
+  function emptyCompareColumnHtml() {
+    return '<div class="compare-map-col">' +
+           '<p class="compare-map-label">&nbsp;</p>' +
+           '<div class="compare-map empty">אין שנה מוקדמת יותר להשוואה</div>' +
+           '</div>';
+  }
+
+  function closeComparison() {
+    document.getElementById('comparePanel').hidden = true;
+    if (window.govmap) {
+      govmap.clearMapMarker({ mapDivId: MAIN_MAP_ID });
+    }
+    document.getElementById('compareMaps').innerHTML = '';
+    selectedIndex = -1;
+    lastCompareEntity = null;
+    document.querySelectorAll('.polygon-item.active').forEach(function (btn) {
+      btn.classList.remove('active');
+    });
+    updateMapOverlay();
+  }
+</script>
+
+</body>
+</html>
