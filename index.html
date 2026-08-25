@@ -423,10 +423,10 @@
     </div>
 
     <p>
-      הזיזו את המחוון כדי לעבור בין תקופות ההשוואה. כל תקופה מציגה את הבניינים החדשים
-      שהתגלו בה. ברשימה מימין למפה מופיעים כל הבניינים של התקופה הנבחרת. לחיצה על בניין
-      ברשימה פותחת למטה השוואה בין תצלומי האוויר של שתי השנים באותה תקופה, ממוקדת על
-      הבניין שנבחר.
+      הזיזו את המחוון כדי לעבור בין תקופות ההשוואה (צמד שנים).
+      כל תקופה מציגה את המבנים החדשים שהתגלו בה.
+      ברשימה משמאל למפה מופיעים כל המבנים של התקופה הנבחרת.
+      לחיצה על איתור ברשימה פותחת למטה השוואה בין תצלומי האוויר של שתי השנים באותה תקופה, ממוקדת על הבניין שנבחר.
     </p>
 
     <button type="button" id="backToAreasBtn" class="back-btn" onclick="backToAreas()" hidden>
@@ -451,6 +451,7 @@
     <div class="map-layout">
       <div id="mapWrap" style="position: relative;">
         <div id="map"></div>
+        <img id="deltaOverlay" style="position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; display: none;" alt="" />
       </div>
 
       <aside class="polygon-panel">
@@ -662,6 +663,44 @@
   // before/after comparison images below instead, both of which
   // render correctly per-selection.
 
+  // Building markers on the main map: a WMS overlay image (same
+  // mechanism as the comparison images) shown over #map when an area
+  // is selected. Known limitation: it's a static image, so it doesn't
+  // track GovMap's own zoom/pan - it can look misaligned once the user
+  // zooms. Hidden while a specific finding is open (selectPolygon)
+  // since the comparison below is the focus then; shown again on close.
+  const AREA_OVERLAY_METERS_PER_PIXEL = 5;
+
+  function areaCenterMerc(areaKey, periodLabel) {
+    const byPeriod = POLYGON_DATA[areaKey] && POLYGON_DATA[areaKey][periodLabel];
+    const all = (byPeriod && byPeriod.length) ? byPeriod :
+      Object.values(POLYGON_DATA[areaKey] || {}).flat();
+    if (!all.length) return null;
+    let sx = 0, sy = 0;
+    all.forEach(function (e) { sx += e.mx; sy += e.my; });
+    return { mx: sx / all.length, my: sy / all.length };
+  }
+
+  function updateMapOverlay() {
+    const img = document.getElementById('deltaOverlay');
+    if (!currentArea) { img.style.display = 'none'; return; }
+
+    const config = AREA_CONFIG[currentArea];
+    const label = config.periods[currentPeriodIndex];
+    const meta = periodMeta(label);
+    const center = areaCenterMerc(currentArea, label);
+    if (!center) { img.style.display = 'none'; return; }
+
+    const mapEl = document.getElementById(MAIN_MAP_ID);
+    const w = mapEl.clientWidth || 640;
+    const h = mapEl.clientHeight || 420;
+
+    img.src = buildDeltaOverlayUrl(DELTA_LAYER, center.mx, center.my, meta.diffDate, {
+      width: w, height: h, metersPerPixel: AREA_OVERLAY_METERS_PER_PIXEL
+    });
+    img.style.display = 'block';
+  }
+
   function selectArea(areaKey) {
     const config = AREA_CONFIG[areaKey];
     if (!config) return;
@@ -697,6 +736,7 @@
 
     updatePeriodUi();
     refreshPolygonList();
+    updateMapOverlay();
   }
 
   function backToAreas() {
@@ -720,6 +760,7 @@
     document.getElementById('areaHeading').textContent = 'בחרי אזור על המפה';
     document.getElementById('areaSelectHint').hidden = false;
     document.getElementById('areaButtons').hidden = false;
+    document.getElementById('deltaOverlay').style.display = 'none';
     document.getElementById('backToAreasBtn').hidden = true;
     document.getElementById('visualizationBody').hidden = true;
   }
@@ -746,6 +787,7 @@
 
     updatePeriodUi();
     refreshPolygonList();
+    updateMapOverlay();
   }
 
   function updatePeriodUi() {
@@ -806,6 +848,7 @@
     govmap.zoomToXY({ x: center.x, y: center.y, level: SELECT_MAP_LEVEL, marker: false, mapDivId: MAIN_MAP_ID });
 
     openComparison(entity);
+    document.getElementById('deltaOverlay').style.display = 'none';
   }
 
   const CLICK_RADIUS_M = 30;
@@ -1045,6 +1088,7 @@
     document.querySelectorAll('.polygon-item.active').forEach(function (btn) {
       btn.classList.remove('active');
     });
+    updateMapOverlay();
   }
 </script>
 
