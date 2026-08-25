@@ -470,10 +470,7 @@
     </div>
 
     <div class="map-layout">
-      <div id="mapWrap" style="position: relative;">
-        <div id="map"></div>
-        <img id="deltaOverlay" style="position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; display: none;" alt="" />
-      </div>
+      <div id="map"></div>
 
       <aside class="polygon-panel">
         <h3>איתורים בתקופה הנבחרת</h3>
@@ -652,62 +649,23 @@
     });
   }
 
-  // Main-map buildings overlay: instead of relying on GovMap's native
-  // Building markers on the main map were tried as a WMS overlay image
-  // (see chat) but a static image can't track GovMap's own zoom/pan -
-  // it stays fixed while the map underneath moves, which reads as
-  // misaligned/wrong once the user interacts with the map. Removed;
-  // building locations are shown via the polygon list and the
-  // before/after comparison images below instead, both of which
-  // render correctly per-selection.
+  // Building markers on the main map are rendered natively by GovMap
+  // itself (see the setVisibleLayers([DELTA_LAYER]/[AREAS_LAYER]) calls
+  // in selectArea/setYear below), which tracks pan/zoom correctly. An
+  // earlier version additionally drew a static WMS overlay image on top
+  // of #map (buildDeltaOverlayUrl + areaCenterMerc); removed because a
+  // static bitmap can't track GovMap's own zoom/pan and visibly drifts
+  // out of place as soon as the user moves the map.
 
-  // Building markers on the main map: a WMS overlay image (same
-  // mechanism as the comparison images) shown over #map when an area
-  // is selected. Known limitation: it's a static image, so it doesn't
-  // track GovMap's own zoom/pan - it can look misaligned once the user
-  // zooms. Hidden while a specific finding is open (selectPolygon)
-  // since the comparison below is the focus then; shown again on close.
-  const AREA_OVERLAY_METERS_PER_PIXEL = 5;
-
-  function areaCenterMerc(areaKey, periodLabel) {
-    const byPeriod = POLYGON_DATA[areaKey] && POLYGON_DATA[areaKey][periodLabel];
-    const all = (byPeriod && byPeriod.length) ? byPeriod :
-      Object.values(POLYGON_DATA[areaKey] || {}).flat();
-    if (!all.length) return null;
-    let sx = 0, sy = 0;
-    all.forEach(function (e) { sx += e.mx; sy += e.my; });
-    return { mx: sx / all.length, my: sy / all.length };
-  }
-
-  // Same fallback-flatten pattern as areaCenterMerc above, but in ITM
-  // (x/y) for the main GovMap map's own zoomToXY/setMapMarker calls -
-  // used by selectArea below to frame an area on entry, replacing the
-  // old hardcoded-boundary-bounds center (see top-of-file note).
+  // Same fallback-flatten pattern used elsewhere, but in ITM (x/y) for
+  // the main GovMap map's own zoomToXY/setMapMarker calls - used by
+  // selectArea below to frame an area on entry, replacing the old
+  // hardcoded-boundary-bounds center (see top-of-file note).
   function areaCenterItm(areaKey, periodLabel) {
     const byPeriod = POLYGON_DATA[areaKey] && POLYGON_DATA[areaKey][periodLabel];
     const all = (byPeriod && byPeriod.length) ? byPeriod :
       Object.values(POLYGON_DATA[areaKey] || {}).flat();
     return averageCenter(all);
-  }
-
-  function updateMapOverlay() {
-    const img = document.getElementById('deltaOverlay');
-    if (!currentArea) { img.style.display = 'none'; return; }
-
-    const config = AREA_CONFIG[currentArea];
-    const label = config.periods[currentPeriodIndex];
-    const meta = periodMeta(label);
-    const center = areaCenterMerc(currentArea, label);
-    if (!center) { img.style.display = 'none'; return; }
-
-    const mapEl = document.getElementById(MAIN_MAP_ID);
-    const w = mapEl.clientWidth || 640;
-    const h = mapEl.clientHeight || 420;
-
-    img.src = buildDeltaOverlayUrl(DELTA_LAYER, center.mx, center.my, meta.diffDate, {
-      width: w, height: h, metersPerPixel: AREA_OVERLAY_METERS_PER_PIXEL
-    });
-    img.style.display = 'block';
   }
 
   function selectArea(areaKey) {
@@ -743,7 +701,6 @@
 
     updatePeriodUi();
     refreshPolygonList();
-    updateMapOverlay();
   }
 
   function backToAreas() {
@@ -768,7 +725,6 @@
     document.getElementById('areaHeading').textContent = 'בחרי אזור';
     document.getElementById('areaSelectHint').hidden = false;
     document.getElementById('areaButtons').hidden = false;
-    document.getElementById('deltaOverlay').style.display = 'none';
     document.getElementById('backToAreasBtn').hidden = true;
     document.getElementById('visualizationBody').hidden = true;
   }
@@ -795,7 +751,6 @@
 
     updatePeriodUi();
     refreshPolygonList();
-    updateMapOverlay();
   }
 
   function updatePeriodUi() {
@@ -856,7 +811,6 @@
     govmap.zoomToXY({ x: center.x, y: center.y, level: SELECT_MAP_LEVEL, marker: false, mapDivId: MAIN_MAP_ID });
 
     openComparison(entity);
-    document.getElementById('deltaOverlay').style.display = 'none';
   }
 
   const CLICK_RADIUS_M = 30;
@@ -1096,7 +1050,6 @@
     document.querySelectorAll('.polygon-item.active').forEach(function (btn) {
       btn.classList.remove('active');
     });
-    updateMapOverlay();
   }
 </script>
 
