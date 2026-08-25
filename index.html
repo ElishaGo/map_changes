@@ -9,11 +9,32 @@
   (top) - see YEARS_DATA further down for the current layer ids.
 
   NOTE: this version includes the multi-area selector (choose-an-area
-  boundary map, then drill into נחלין/עקרבא/עזון עתמה). It was tested
-  earlier ONLY by opening the file locally (file:///...), which fails
-  GovMap's domain-locked token entirely (401s on every private-layer
-  call) - so nothing about private layers was ever actually verified.
-  Test this only via the real deployed URL.
+  buttons, then drill into נחלין/עקרבא/עזון עתמה). Area selection is by
+  button (#areaButtons), not by clicking boundary shapes on the map -
+  there is no hardcoded boundary geometry in this file any more (see
+  AREAS_LAYER note below). Test only via the real deployed URL - GovMap's
+  token is domain-locked and 401s on every private-layer call from
+  file:///...
+
+  LAYER IDS: AREAS_LAYER/DELTA_LAYER below are layer_242214 (the 3 area
+  boundary polygons) and layer_242213 (the combined points/change layer),
+  confirmed live via direct WMS GetMap requests - both render real
+  content (layer_242214 draws the settlement outlines, layer_242213
+  draws real change points, and CQL_FILTER name=/diff_date= on it
+  correctly narrows to one area+period). The previous ids these were set
+  to (layer_242116 / layer_242108) resolved to valid-but-permanently-
+  empty layers - same request shape, zero features anywhere tested - so
+  if either constant ever needs to change again, verify the same way
+  (GetMap the layer directly, over a wide bbox, and look for actual
+  drawn content, not just a 200/valid-image response) before trusting a
+  new id.
+
+  NO HARDCODED BOUNDARY GEOMETRY: earlier versions kept a client-side
+  copy of each area's boundary ring (for point-in-polygon click
+  detection, before the button UI existed) and used it to compute map-
+  centering coordinates. Removed - AREAS_LAYER is GovMap's own live
+  boundary layer, and centering now comes from averaging each area's own
+  POLYGON_DATA points instead (see combinedCenter/areaCenterItm below).
 -->
 <!DOCTYPE html>
 <html lang="he" dir="rtl">
@@ -533,43 +554,42 @@
   const FALLBACK_CENTER = { x: 211447, y: 621816 };
 
   const YEARS_DATA = [
-    { label: "2024", period: "2023–2024", diffDate: "2023 - 2024", delta: "layer_242108" },
-    { label: "2025", period: "2024–2025", diffDate: "2024 - 2025", delta: "layer_242108" }
+    { label: "2024", period: "2023–2024", diffDate: "2023 - 2024", delta: "layer_242213" },
+    { label: "2025", period: "2024–2025", diffDate: "2024 - 2025", delta: "layer_242213" }
   ];
 
-  const AREAS_LAYER = "layer_242116";
-  const DELTA_LAYER = "layer_242108";
+  const AREAS_LAYER = "layer_242214";
+  const DELTA_LAYER = "layer_242213";
 
   const AREA_CONFIG = {
     "נאחלין": {
       displayName: "נחלין",
-      boundaryName: "נחאלין",
       periods: ["2024", "2025"],
       base: {},
       cloudfrontFolder: { "2024": "2024", "2025": "2025_new" }
     },
     "עקרבא": {
       displayName: "עקרבא",
-      boundaryName: "עקרבא",
       periods: ["2025"],
       base: {},
       cloudfrontFolder: {}
     },
     "עזון עתמה": {
       displayName: "עזון עתמה",
-      boundaryName: "עזון עתמה",
       periods: ["2025"],
       base: {},
       cloudfrontFolder: {}
     }
   };
 
-  const BOUNDARIES = {"נחאלין":{"rings":[[[211924.5,621691.0],[212000.5,621587.0],[212108.5,621483.0],[212204.5,621591.0],[212360.5,621475.0],[212372.5,621315.0],[212360.5,621138.9],[212276.5,621010.9],[212240.5,620914.9],[212072.5,620954.9],[211992.5,620902.9],[211788.4,620902.9],[211664.4,620922.9],[211536.3,620978.5],[211461.8,620932.6],[211262.3,620912.6],[211100.3,620978.9],[211028.3,621062.9],[210984.3,621114.9],[210840.3,621126.9],[210604.6,621246.1],[210552.2,621339.0],[210435.3,621548.9],[210708.2,621735.0],[210856.3,621623.0],[211068.3,621619.0],[211112.3,621631.0],[211132.3,621811.0],[211396.4,622071.1],[211620.4,622123.1],[211792.4,622011.1],[211996.5,621875.1],[211924.5,621691.0]]],"bounds":[210435.3,620902.9,212372.5,622123.1]},"עקרבא":{"rings":[[[232926.7,669143.3],[232916.3,669311.8],[232799.4,669360.0],[232709.9,669325.6],[232593.0,669332.5],[232579.2,669397.8],[232386.6,669432.2],[232338.4,669435.7],[232231.8,669428.8],[232224.9,669301.5],[232108.0,669342.8],[232114.9,669435.7],[231953.2,669439.1],[231953.2,669532.0],[231770.9,669538.9],[231708.9,669652.4],[231695.2,669803.7],[231602.3,669865.7],[231451.0,669882.9],[231433.8,670089.3],[231571.4,670134.0],[231543.8,670240.6],[231595.4,670268.1],[231598.9,670354.1],[231770.9,670371.3],[231856.9,670388.5],[231836.2,670450.4],[231942.9,670457.3],[232028.9,670519.2],[232111.4,670632.8],[232121.7,670698.1],[232121.7,670763.5],[232046.1,670880.4],[232211.2,670963.0],[232321.2,670901.1],[232403.8,670945.8],[232352.2,671083.4],[232541.4,671152.2],[232623.9,671107.5],[232627.4,670983.6],[232765.0,670993.9],[232857.9,671093.7],[233071.1,671076.5],[233136.5,670914.8],[233184.6,670780.7],[233256.9,670667.2],[233394.5,670629.3],[233483.9,670639.6],[233659.3,670464.2],[233683.4,670319.7],[233618.1,670278.4],[233432.3,670192.5],[233542.4,669965.4],[233535.5,669803.7],[233487.4,669779.7],[233346.3,669786.5],[233291.3,669762.5],[233291.3,669710.9],[233336.0,669607.7],[233449.5,669528.6],[233532.1,669384.1],[233542.4,669291.2],[233415.1,669280.9],[233315.4,669225.9],[233143.4,669157.1],[233135.9,669156.9],[233119.1,669030.3],[233132.9,668892.6],[233194.9,668775.5],[233260.3,668648.1],[233301.6,668572.3],[233250.0,668462.2],[233243.1,668234.9],[233215.5,668090.3],[233088.1,668097.2],[233070.9,668279.7],[232991.7,668310.7],[232953.8,668372.6],[232950.4,668527.6],[232922.9,668682.5],[232916.0,668830.6],[232928.9,669143.6],[232926.7,669143.3]]],"bounds":[231433.8,668090.3,233683.4,671152.2]},"עזון עתמה":{"rings":[[[200743.0,670010.1],[200758.7,670116.7],[201009.6,670455.5],[201010.1,670475.8],[201012.8,670577.8],[201125.7,670631.1],[201219.8,670634.3],[201291.9,670615.4],[201326.4,670609.2],[201329.6,670430.4],[201373.5,670370.8],[201536.6,670323.7],[201546.0,670270.4],[201546.0,670213.9],[201602.5,670173.2],[201658.9,670217.1],[201743.6,670192.0],[201831.5,670192.0],[201891.4,670179.3],[202016.6,670139.7],[202126.3,670104.2],[202174.8,670109.5],[202198.2,670083.0],[202235.1,670059.5],[202280.0,670034.5],[202320.1,670001.2],[202336.1,669965.2],[202355.4,669934.0],[202369.8,669893.1],[202391.4,669821.0],[202386.6,669772.9],[202369.8,669696.0],[202372.2,669652.7],[202376.6,669502.7],[202308.2,669423.5],[202248.6,669307.4],[202223.6,669225.9],[202066.7,669257.2],[201988.3,669276.0],[201985.2,669194.5],[201942.8,669155.1],[201881.5,669115.7],[201807.0,669080.5],[201759.3,669163.1],[201684.0,669200.8],[201604.0,669176.5],[201589.9,669056.5],[201489.6,668990.6],[201379.8,668962.4],[201342.1,668990.6],[201364.1,669081.6],[201411.1,669153.7],[201398.6,669225.9],[201414.3,669320.0],[201382.9,669407.8],[201304.5,669385.8],[201188.4,669379.6],[201088.0,669404.7],[200780.6,669903.4],[200743.0,670010.1]]],"bounds":[200743.0,668962.4,202391.4,670634.3]}};
-
   const ALL_LAYERS = [AREAS_LAYER, DELTA_LAYER].concat(
     Object.values(AREA_CONFIG).flatMap(function (a) { return Object.values(a.base); })
   );
 
+  // Plain average of a set of {x,y} points (ITM/EPSG:2039, same system
+  // the main GovMap map and POLYGON_DATA's x/y use) - good enough for
+  // framing a map center, no GIS lib needed for that. Returns null on an
+  // empty/missing list so callers can fall back to FALLBACK_CENTER.
   function averageCenter(points) {
     if (!points || !points.length) return null;
     let sx = 0, sy = 0;
@@ -577,37 +597,15 @@
     return { x: sx / points.length, y: sy / points.length };
   }
 
-  function combinedBounds() {
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    Object.values(BOUNDARIES).forEach(function (b) {
-      minX = Math.min(minX, b.bounds[0]); minY = Math.min(minY, b.bounds[1]);
-      maxX = Math.max(maxX, b.bounds[2]); maxY = Math.max(maxY, b.bounds[3]);
+  // Center for the initial "choose an area" overview: the average of
+  // every detected point across every configured area, in ITM. Replaces
+  // an earlier hardcoded-boundary-bounds version - see the top-of-file
+  // note on why there's no boundary geometry baked into this file.
+  function combinedCenter() {
+    const all = Object.values(POLYGON_DATA).flatMap(function (byPeriod) {
+      return Object.values(byPeriod).flat();
     });
-    return { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
-  }
-
-  function pointInRing(x, y, ring) {
-    let inside = false;
-    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-      const xi = ring[i][0], yi = ring[i][1];
-      const xj = ring[j][0], yj = ring[j][1];
-      const intersects = ((yi > y) !== (yj > y)) &&
-        (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
-      if (intersects) inside = !inside;
-    }
-    return inside;
-  }
-
-  function findAreaAtPoint(x, y) {
-    for (const boundaryName in BOUNDARIES) {
-      const rings = BOUNDARIES[boundaryName].rings;
-      if (rings.some(function (ring) { return pointInRing(x, y, ring); })) {
-        for (const areaKey in AREA_CONFIG) {
-          if (AREA_CONFIG[areaKey].boundaryName === boundaryName) return areaKey;
-        }
-      }
-    }
-    return null;
+    return averageCenter(all) || FALLBACK_CENTER;
   }
 
   const POLYGON_DATA = {"עקרבא":{"2024":[],"2025":[{"id":1,"x":232246.2,"y":670932.2,"mx":3934029.18,"my":3780612.6,"cat":"מבנה חדש"},{"id":2,"x":232754.5,"y":670896.4,"mx":3934628.88,"my":3780569.4,"cat":"מבנה חדש"},{"id":3,"x":232351.2,"y":670848.3,"mx":3934152.97,"my":3780513.06,"cat":"מבנה חדש"},{"id":4,"x":232394.5,"y":670801.3,"mx":3934203.98,"my":3780457.31,"cat":"מבנה חדש"},{"id":5,"x":232387.1,"y":670801.3,"mx":3934195.19,"my":3780457.23,"cat":"מבנה שנהרס"},{"id":6,"x":232923.6,"y":670611.6,"mx":3934827.82,"my":3780231.52,"cat":"מבנה חדש"},{"id":7,"x":233214.4,"y":670495.7,"mx":3935170.71,"my":3780093.72,"cat":"מבנה שנהרס"},{"id":8,"x":232383.1,"y":670453.5,"mx":3934189.98,"my":3780045.0,"cat":"מבנה חדש"},{"id":9,"x":233181.9,"y":670383.6,"mx":3935132.2,"my":3779960.9,"cat":"מבנה חדש"},{"id":10,"x":231692.1,"y":670337.1,"mx":3933374.65,"my":3779908.03,"cat":"מבנה חדש"},{"id":11,"x":231808.3,"y":670257.9,"mx":3933511.61,"my":3779813.96,"cat":"מבנה חדש"},{"id":12,"x":232098.1,"y":670233.1,"mx":3933853.49,"my":3779784.15,"cat":"מבנה חדש"},{"id":13,"x":231874.2,"y":670212.1,"mx":3933589.28,"my":3779759.55,"cat":"מבנה חדש"},{"id":14,"x":231679.8,"y":670210.7,"mx":3933360.0,"my":3779758.23,"cat":"מבנה חדש"},{"id":15,"x":233390.3,"y":670201.8,"mx":3935377.76,"my":3779745.09,"cat":"מבנה חדש"},{"id":16,"x":232081.1,"y":670081.7,"mx":3933833.2,"my":3779604.76,"cat":"מבנה חדש"},{"id":17,"x":232472.8,"y":670035.6,"mx":3934295.15,"my":3779549.47,"cat":"מבנה שנהרס"},{"id":18,"x":232905.2,"y":670016.1,"mx":3934805.23,"my":3779525.7,"cat":"מבנה שנהרס"},{"id":19,"x":232182.0,"y":669957.9,"mx":3933952.09,"my":3779457.79,"cat":"מבנה חדש"},{"id":20,"x":231693.9,"y":669888.9,"mx":3933376.16,"my":3779376.73,"cat":"מבנה חדש"},{"id":21,"x":232288.3,"y":669886.4,"mx":3934077.32,"my":3779372.91,"cat":"מבנה חדש"},{"id":22,"x":231970.9,"y":669868.8,"mx":3933702.9,"my":3779352.56,"cat":"מבנה חדש"},{"id":23,"x":232519.6,"y":669868.6,"mx":3934350.14,"my":3779351.52,"cat":"חשד למבנה חדש"},{"id":24,"x":233441.5,"y":669816.0,"mx":3935437.5,"my":3779287.67,"cat":"מבנה חדש"},{"id":25,"x":231818.5,"y":669701.0,"mx":3933522.87,"my":3779153.82,"cat":"מבנה חדש"},{"id":26,"x":232794.8,"y":669623.9,"mx":3934674.4,"my":3779061.0,"cat":"מבנה חדש"},{"id":27,"x":232795.5,"y":669581.8,"mx":3934675.2,"my":3779011.1,"cat":"מבנה חדש"},{"id":28,"x":231880.6,"y":669578.0,"mx":3933595.96,"my":3779007.98,"cat":"מבנה חדש"},{"id":29,"x":232098.3,"y":669438.9,"mx":3933852.58,"my":3778842.72,"cat":"מבנה חדש"},{"id":30,"x":233153.9,"y":669432.8,"mx":3935097.65,"my":3778833.88,"cat":"מבנה חדש"},{"id":31,"x":232888.1,"y":669416.0,"mx":3934784.18,"my":3778814.46,"cat":"מבנה חדש"},{"id":32,"x":233233.6,"y":669411.2,"mx":3935191.65,"my":3778808.14,"cat":"מבנה חדש"},{"id":33,"x":232827.1,"y":669411.1,"mx":3934712.14,"my":3778808.78,"cat":"מבנה חדש"},{"id":34,"x":232619.3,"y":669341.9,"mx":3934466.96,"my":3778726.99,"cat":"מבנה חדש"},{"id":35,"x":232561.4,"y":669327.0,"mx":3934398.62,"my":3778709.41,"cat":"מבנה חדש"},{"id":36,"x":233042.6,"y":669153.2,"mx":3934966.01,"my":3778502.74,"cat":"מבנה חדש"}]},"עזון עתמה":{"2024":[],"2025":[{"id":1,"x":201152.6,"y":670502.3,"mx":3897347.65,"my":3780093.06,"cat":"חשד למבנה חדש"},{"id":2,"x":200865.5,"y":670270.9,"mx":3897009.5,"my":3779818.17,"cat":"מבנה חדש"},{"id":3,"x":200942.7,"y":670061.1,"mx":3897100.98,"my":3779569.68,"cat":"מבנה חדש"},{"id":4,"x":200950.8,"y":670044.4,"mx":3897110.58,"my":3779549.86,"cat":"מבנה חדש"},{"id":5,"x":201689.7,"y":670042.0,"mx":3897982.18,"my":3779548.58,"cat":"מבנה חדש"},{"id":6,"x":202252.9,"y":669982.1,"mx":3898646.71,"my":3779478.68,"cat":"מבנה שנהרס"},{"id":7,"x":202078.6,"y":669930.1,"mx":3898441.23,"my":3779416.69,"cat":"מבנה חדש"},{"id":8,"x":201576.7,"y":669815.1,"mx":3897849.42,"my":3779279.34,"cat":"חשד למבנה חדש"},{"id":9,"x":202328.6,"y":669794.3,"mx":3898736.43,"my":3779256.27,"cat":"מבנה חדש"},{"id":10,"x":201897.7,"y":669711.2,"mx":3898228.28,"my":3779156.93,"cat":"מבנה חדש"},{"id":11,"x":201643.3,"y":669627.1,"mx":3897928.29,"my":3779056.71,"cat":"מבנה חדש"},{"id":12,"x":201604.6,"y":669613.1,"mx":3897882.77,"my":3779040.0,"cat":"מבנה חדש"},{"id":13,"x":201944.9,"y":669479.8,"mx":3898284.4,"my":3778882.77,"cat":"מבנה חדש"},{"id":14,"x":202026.4,"y":669270.0,"mx":3898381.02,"my":3778634.19,"cat":"מבנה חדש"},{"id":15,"x":202049.5,"y":669264.4,"mx":3898408.25,"my":3778627.58,"cat":"מבנה חדש"}]},"נאחלין":{"2024":[{"id":1,"x":211423.6,"y":622060.7,"mx":3909508.9,"my":3722820.81,"cat":"מבנה חדש"},{"id":2,"x":211720.8,"y":622030.7,"mx":3909857.89,"my":3722785.77,"cat":"מבנה חדש"},{"id":3,"x":211768.9,"y":621950.2,"mx":3909914.47,"my":3722690.83,"cat":"מבנה חדש"},{"id":4,"x":211610.3,"y":621925.3,"mx":3909728.25,"my":3722661.28,"cat":"מבנה חדש"},{"id":5,"x":211245.9,"y":621890.3,"mx":3909300.41,"my":3722619.62,"cat":"מבנה חדש"},{"id":6,"x":211614.4,"y":621869.2,"mx":3909733.16,"my":3722595.12,"cat":"חשד למבנה חדש"},{"id":7,"x":211264.8,"y":621862.9,"mx":3909322.61,"my":3722587.33,"cat":"מבנה חדש"},{"id":8,"x":211510.1,"y":621751.6,"mx":3909610.73,"my":3722456.26,"cat":"מבנה חדש"},{"id":9,"x":211126.9,"y":621706.4,"mx":3909160.85,"my":3722402.55,"cat":"מבנה חדש"},{"id":10,"x":210601.3,"y":621639.7,"mx":3908543.87,"my":3722323.4,"cat":"מבנה חדש"},{"id":11,"x":210582.3,"y":621637.1,"mx":3908521.51,"my":3722320.22,"cat":"מבנה חדש"},{"id":12,"x":210553.6,"y":621620.1,"mx":3908487.86,"my":3722300.21,"cat":"מבנה חדש"},{"id":13,"x":211836.1,"y":621602.3,"mx":3909993.66,"my":3722280.39,"cat":"מבנה חדש"},{"id":14,"x":210841.5,"y":621571.4,"mx":3908825.88,"my":3722243.03,"cat":"מבנה חדש"},{"id":15,"x":211193.6,"y":621564.4,"mx":3909239.35,"my":3722235.08,"cat":"חשד למבנה חדש"},{"id":16,"x":210667.7,"y":621538.8,"mx":3908621.87,"my":3722204.35,"cat":"חשד למבנה חדש"},{"id":17,"x":211294.8,"y":621520.7,"mx":3909358.23,"my":3722183.62,"cat":"מבנה חדש"},{"id":18,"x":211151.9,"y":621507.4,"mx":3909190.39,"my":3722167.82,"cat":"מבנה חדש"},{"id":19,"x":210509.9,"y":621461.9,"mx":3908436.69,"my":3722113.54,"cat":"מבנה חדש"},{"id":20,"x":210504.6,"y":621443.9,"mx":3908430.5,"my":3722092.23,"cat":"מבנה חדש"},{"id":21,"x":211632.5,"y":621428.5,"mx":3909754.76,"my":3722075.15,"cat":"חשד למבנה חדש"},{"id":22,"x":210581.2,"y":621421.3,"mx":3908520.46,"my":3722065.61,"cat":"מבנה חדש"},{"id":23,"x":210526.0,"y":621386.1,"mx":3908455.65,"my":3722024.03,"cat":"מבנה חדש"},{"id":24,"x":211713.6,"y":621381.5,"mx":3909850.03,"my":3722019.77,"cat":"חשד למבנה חדש"},{"id":25,"x":212089.7,"y":621358.9,"mx":3910291.58,"my":3721993.45,"cat":"מבנה חדש"},{"id":26,"x":210649.3,"y":621304.4,"mx":3908600.54,"my":3721927.77,"cat":"מבנה חדש"},{"id":27,"x":210733.0,"y":621296.9,"mx":3908698.79,"my":3721919.08,"cat":"מבנה חדש"},{"id":28,"x":210751.0,"y":621294.8,"mx":3908719.91,"my":3721916.62,"cat":"מבנה חדש"},{"id":29,"x":211915.8,"y":621285.5,"mx":3910087.52,"my":3721906.65,"cat":"מבנה חדש"},{"id":30,"x":211980.6,"y":621266.3,"mx":3910163.55,"my":3721884.07,"cat":"חשד למבנה חדש"},{"id":31,"x":211807.7,"y":621265.6,"mx":3909960.61,"my":3721883.15,"cat":"מבנה חדש"},{"id":32,"x":211044.4,"y":621264.2,"mx":3909064.39,"my":3721880.75,"cat":"מבנה חדש"},{"id":33,"x":211859.7,"y":621254.3,"mx":3910021.66,"my":3721869.83,"cat":"חשד למבנה חדש"},{"id":34,"x":211005.2,"y":621249.0,"mx":3909018.39,"my":3721862.8,"cat":"מבנה חדש"},{"id":35,"x":212278.9,"y":621214.5,"mx":3910513.83,"my":3721823.23,"cat":"מבנה חדש"},{"id":36,"x":211952.4,"y":621190.1,"mx":3910130.57,"my":3721794.22,"cat":"מבנה חדש"},{"id":37,"x":210841.4,"y":621166.2,"mx":3908826.18,"my":3721764.96,"cat":"חשד למבנה חדש"},{"id":38,"x":212160.1,"y":621139.2,"mx":3910374.46,"my":3721734.32,"cat":"חשד למבנה חדש"},{"id":39,"x":211543.6,"y":621069.8,"mx":3909650.7,"my":3721651.87,"cat":"מבנה חדש"},{"id":40,"x":211505.3,"y":621060.4,"mx":3909605.78,"my":3721640.72,"cat":"מבנה חדש"},{"id":41,"x":211057.3,"y":621057.3,"mx":3909079.73,"my":3721636.69,"cat":"מבנה חדש"},{"id":42,"x":211523.7,"y":621044.6,"mx":3909627.37,"my":3721622.14,"cat":"מבנה חדש"},{"id":43,"x":211434.5,"y":621011.4,"mx":3909522.7,"my":3721582.93,"cat":"מבנה חדש"},{"id":44,"x":211077.1,"y":621008.7,"mx":3909103.07,"my":3721579.38,"cat":"מבנה חדש"},{"id":45,"x":211811.7,"y":620960.7,"mx":3909965.5,"my":3721523.4,"cat":"מבנה חדש"},{"id":46,"x":211226.8,"y":620959.9,"mx":3909278.9,"my":3721521.91,"cat":"חשד למבנה חדש"}],"2025":[{"id":1,"x":211875.6,"y":621732.5,"mx":3910039.95,"my":3722433.99,"cat":"מבנה חדש"},{"id":2,"x":211605.2,"y":621724.6,"mx":3909722.46,"my":3722424.52,"cat":"מבנה חדש"},{"id":3,"x":210469.2,"y":621534.1,"mx":3908388.84,"my":3722198.58,"cat":"מבנה חדש"},{"id":4,"x":210585.3,"y":621477.8,"mx":3908525.21,"my":3722132.32,"cat":"מבנה חדש"},{"id":5,"x":210710.6,"y":621306.7,"mx":3908672.47,"my":3721930.64,"cat":"מבנה חדש"},{"id":6,"x":211085.6,"y":621281.7,"mx":3909112.74,"my":3721901.45,"cat":"חשד למבנה חדש"},{"id":7,"x":211452.8,"y":621070.9,"mx":3909544.11,"my":3721653.07,"cat":"מבנה חדש"},{"id":8,"x":211219.7,"y":621025.7,"mx":3909270.42,"my":3721599.51,"cat":"מבנה חדש"}]}};
@@ -627,7 +625,7 @@
     govmap.createMap(MAIN_MAP_ID, {
       token: GOVMAP_TOKEN,
       background: "1",
-      center: combinedBounds(),
+      center: combinedCenter(),
       level: AREAS_OVERVIEW_LEVEL,
       visibleLayers: [],
       layers: ALL_LAYERS,
@@ -681,6 +679,17 @@
     return { mx: sx / all.length, my: sy / all.length };
   }
 
+  // Same fallback-flatten pattern as areaCenterMerc above, but in ITM
+  // (x/y) for the main GovMap map's own zoomToXY/setMapMarker calls -
+  // used by selectArea below to frame an area on entry, replacing the
+  // old hardcoded-boundary-bounds center (see top-of-file note).
+  function areaCenterItm(areaKey, periodLabel) {
+    const byPeriod = POLYGON_DATA[areaKey] && POLYGON_DATA[areaKey][periodLabel];
+    const all = (byPeriod && byPeriod.length) ? byPeriod :
+      Object.values(POLYGON_DATA[areaKey] || {}).flat();
+    return averageCenter(all);
+  }
+
   function updateMapOverlay() {
     const img = document.getElementById('deltaOverlay');
     if (!currentArea) { img.style.display = 'none'; return; }
@@ -719,10 +728,8 @@
     document.getElementById('yearSlider').max = String(config.periods.length - 1);
     document.getElementById('yearSlider').value = String(currentPeriodIndex);
 
-    const bounds = BOUNDARIES[config.boundaryName].bounds;
-    const center = { x: (bounds[0] + bounds[2]) / 2, y: (bounds[1] + bounds[3]) / 2 };
-
     const label = config.periods[currentPeriodIndex];
+    const center = areaCenterItm(areaKey, label) || FALLBACK_CENTER;
     const base = config.base[label];
     try {
       govmap.setVisibleLayers(
@@ -749,7 +756,8 @@
         govmap.setVisibleLayers([AREAS_LAYER], base ? [base, DELTA_LAYER] : [DELTA_LAYER]);
       }
       govmap.clearMapMarker({ mapDivId: MAIN_MAP_ID });
-      govmap.zoomToXY({ x: combinedBounds().x, y: combinedBounds().y, level: AREAS_OVERVIEW_LEVEL, marker: false, mapDivId: MAIN_MAP_ID });
+      const overview = combinedCenter();
+      govmap.zoomToXY({ x: overview.x, y: overview.y, level: AREAS_OVERVIEW_LEVEL, marker: false, mapDivId: MAIN_MAP_ID });
     } catch (err) {
       console.error('GovMap call failed in backToAreas:', err);
     }
@@ -757,7 +765,7 @@
     currentArea = null;
     selectedIndex = -1;
     currentEntities = [];
-    document.getElementById('areaHeading').textContent = 'בחרי אזור על המפה';
+    document.getElementById('areaHeading').textContent = 'בחרי אזור';
     document.getElementById('areaSelectHint').hidden = false;
     document.getElementById('areaButtons').hidden = false;
     document.getElementById('deltaOverlay').style.display = 'none';
