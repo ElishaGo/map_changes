@@ -423,11 +423,9 @@
     </div>
 
     <p>
-      בתוך אזור - הזיזו את המחוון כדי לעבור בין תקופות ההשוואה (כשיש יותר מאחת) - כל תקופה
-      מציגה רק את הבניינים החדשים שהתגלו <strong>בפרק הזמן הזה בלבד</strong> (השוואה בין שתי
-      שנות תצלום עוקבות, לא צבירה של כל השנים יחד). ברשימה מימין לצד המפה מופיעים כל הבניינים
-      החדשים של התקופה הפעילה, ואפשר גם ללחוץ ישירות על סימון על המפה עצמה - כל בחירה מסמנת
-      אותו על המפה ופותחת למטה השוואה בין תצלום האוויר של שתי השנים באותה תקופה, ממוקדת על
+      הזיזו את המחוון כדי לעבור בין תקופות ההשוואה. כל תקופה מציגה את הבניינים החדשים
+      שהתגלו בה. ברשימה מימין למפה מופיעים כל הבניינים של התקופה הנבחרת. לחיצה על בניין
+      ברשימה פותחת למטה השוואה בין תצלומי האוויר של שתי השנים באותה תקופה, ממוקדת על
       הבניין שנבחר.
     </p>
 
@@ -445,16 +443,14 @@
       <p id="periodCount" class="period-count"></p>
 
       <div class="legend">
-        <span><i style="background:#9ca3af;"></i> רקע: תצלום אוויר</span>
-        <span><i style="background:#60a5fa;"></i> מצב קיים</span>
-        <span><i style="background:#f87171;"></i> בניינים חדשים בתקופה הנבחרת</span>
+        <span><i style="background:#9ca3af;"></i> רקע: תצלום אוויר <span id="orthoYear" dir="ltr"></span></span>
+        <span><i style="background:#f87171;"></i> בניינים חדשים בתקופה הנבחרת (ברשימה ובהשוואה למטה)</span>
       </div>
     </div>
 
     <div class="map-layout">
       <div id="mapWrap" style="position: relative;">
         <div id="map"></div>
-        <img id="deltaOverlay" style="position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; display: none;" alt="" />
       </div>
 
       <aside class="polygon-panel">
@@ -647,10 +643,9 @@
         }
       },
       onLoad: function () {
-        // Area selection happens via the buttons (#areaButtons), and
-        // building markers via the WMS overlay image (updateMapOverlay)
-        // - neither depends on native GovMap layer visibility, which
-        // requires the layer be shared to this specific account.
+        // Area selection happens via the buttons (#areaButtons) - not
+        // via native GovMap layer visibility, which requires the layer
+        // be shared to this specific account (see chat).
       },
       onError: function (e) {
         console.error('GovMap error', e);
@@ -659,44 +654,13 @@
   }
 
   // Main-map buildings overlay: instead of relying on GovMap's native
-  // layer visibility (which turned out to require the layer be shared
-  // to this specific account - see chat), the building markers on the
-  // main map are drawn the same way the comparison images already work:
-  // a plain WMS GetMap image request, positioned as an absolutely-
-  // positioned <img> over #map. AREA_OVERLAY_METERS_PER_PIXEL is a
-  // rough "whole settlement" scale - tune if it doesn't visually match
-  // MAIN_MAP_LEVEL's actual framing once checked live.
-  const AREA_OVERLAY_METERS_PER_PIXEL = 5;
-
-  function areaCenterMerc(areaKey, periodLabel) {
-    const byPeriod = POLYGON_DATA[areaKey] && POLYGON_DATA[areaKey][periodLabel];
-    const all = (byPeriod && byPeriod.length) ? byPeriod :
-      Object.values(POLYGON_DATA[areaKey] || {}).flat();
-    if (!all.length) return null;
-    let sx = 0, sy = 0;
-    all.forEach(function (e) { sx += e.mx; sy += e.my; });
-    return { mx: sx / all.length, my: sy / all.length };
-  }
-
-  function updateMapOverlay() {
-    const img = document.getElementById('deltaOverlay');
-    if (!currentArea) { img.style.display = 'none'; return; }
-
-    const config = AREA_CONFIG[currentArea];
-    const label = config.periods[currentPeriodIndex];
-    const meta = periodMeta(label);
-    const center = areaCenterMerc(currentArea, label);
-    if (!center) { img.style.display = 'none'; return; }
-
-    const mapEl = document.getElementById(MAIN_MAP_ID);
-    const w = mapEl.clientWidth || 640;
-    const h = mapEl.clientHeight || 420;
-
-    img.src = buildDeltaOverlayUrl(DELTA_LAYER, center.mx, center.my, meta.diffDate, {
-      width: w, height: h, metersPerPixel: AREA_OVERLAY_METERS_PER_PIXEL
-    });
-    img.style.display = 'block';
-  }
+  // Building markers on the main map were tried as a WMS overlay image
+  // (see chat) but a static image can't track GovMap's own zoom/pan -
+  // it stays fixed while the map underneath moves, which reads as
+  // misaligned/wrong once the user interacts with the map. Removed;
+  // building locations are shown via the polygon list and the
+  // before/after comparison images below instead, both of which
+  // render correctly per-selection.
 
   function selectArea(areaKey) {
     const config = AREA_CONFIG[areaKey];
@@ -733,7 +697,6 @@
 
     updatePeriodUi();
     refreshPolygonList();
-    updateMapOverlay();
   }
 
   function backToAreas() {
@@ -759,7 +722,6 @@
     document.getElementById('areaButtons').hidden = false;
     document.getElementById('backToAreasBtn').hidden = true;
     document.getElementById('visualizationBody').hidden = true;
-    document.getElementById('deltaOverlay').style.display = 'none';
   }
 
   function setYear(index) {
@@ -784,7 +746,6 @@
 
     updatePeriodUi();
     refreshPolygonList();
-    updateMapOverlay();
   }
 
   function updatePeriodUi() {
@@ -792,6 +753,7 @@
     const label = config.periods[currentPeriodIndex];
     const meta = periodMeta(label);
     document.getElementById('yearLabel').textContent = meta.period;
+    document.getElementById('orthoYear').textContent = '(' + label + ')';
   }
 
   function escapeHtml(value) {
