@@ -545,14 +545,6 @@
   const COMPARE_TILE_ZOOM = 20;
   const BASE_COMPARE_METERS_PER_PIXEL = 156543.03392804097 / Math.pow(2, COMPARE_TILE_ZOOM); // ~0.149 m/px
 
-  // Baseline year shown as the "old" (left, in this RTL layout) minor
-  // map whenever the selected period has no earlier period configured
-  // (e.g. period "2024", which is periods[0] for every area) - see
-  // areaPeriodEntry below. Background photo only, no change overlay:
-  // there's no diff layer behind a 2022-2023 comparison, so it's just
-  // "what the area looked like right before the tracked period starts".
-  const BASELINE_YEAR = "2023";
-
   const ZOOM_LEVELS = [1, 1.5, 2, 3, 4, 6];
   let zoomIndex = 0;
   let lastCompareEntity = null;
@@ -584,13 +576,13 @@
       displayName: "עקרבא",
       periods: ["2025"],
       base: {},
-      cloudfrontFolder: { "2023": "2023", "2025": "2025" }
+      cloudfrontFolder: { "2023": "2023", "2024": "2024", "2025": "2025" }
     },
     "עזון עתמה": {
       displayName: "עזון עתמה",
       periods: ["2025"],
       base: {},
-      cloudfrontFolder: { "2023": "2023", "2025": "2025" }
+      cloudfrontFolder: { "2023": "2023", "2024": "2024", "2025": "2025" }
     }
   };
 
@@ -930,10 +922,11 @@
 
     if (!wrap.isConnected) return;
 
-    // Baseline-year panels (yearEntry.diffDate null - see BASELINE_YEAR /
-    // areaPeriodEntry) have no change layer behind them: skip the fetch
-    // rather than request DELTA_LAYER with no CQL_FILTER, which would
-    // draw every change point from every area/date instead of none.
+    // Adjacent-year panels with no configured period of their own
+    // (yearEntry.diffDate null - see areaPeriodEntry's offset===-1
+    // case) have no change layer behind them: skip the fetch rather
+    // than request DELTA_LAYER with no CQL_FILTER, which would draw
+    // every change point from every area/date instead of none.
     const overlayImg = yearEntry.diffDate
       ? await loadImage(buildDeltaOverlayUrl(DELTA_LAYER, entity.mx, entity.my, yearEntry.diffDate))
       : null;
@@ -982,16 +975,33 @@
 
   function areaPeriodEntry(offset) {
     const config = AREA_CONFIG[currentArea];
-    const idx = currentPeriodIndex + offset;
-    if (idx < 0) {
-      // No earlier period configured for this area (idx would be
-      // negative) - fall back to the plain baseline-year photo instead
-      // of leaving the "old" panel empty. Only if that area actually has
-      // baseline tiles mapped; otherwise behave as before (no panel).
-      const folder = config.cloudfrontFolder[BASELINE_YEAR];
-      return folder ? { label: BASELINE_YEAR, period: null, diffDate: null, cloudfrontFolder: folder } : null;
+
+    if (offset === -1) {
+      // "Old"/left panel: always exactly one calendar year before the
+      // right panel's year, so the two minor maps are always adjacent
+      // years - regardless of whether that earlier year has its own
+      // top-level, independently-browsable period entry. (Bug this
+      // fixes: עקרבא/עזון עתמה's only period is "2025", so the old
+      // array-index-based lookup fell through to the fixed 2023
+      // baseline instead of the adjacent 2024 - left=2023/right=2025,
+      // skipping a year.) Falls back to background-only, no overlay,
+      // when the adjacent year isn't itself a configured period (e.g.
+      // 2023 next to 2024) - see periodMeta/YEARS_DATA.
+      const rightLabel = config.periods[currentPeriodIndex];
+      const leftLabel = String(Number(rightLabel) - 1);
+      const folder = config.cloudfrontFolder[leftLabel];
+      if (!folder) return null;
+      const meta = periodMeta(leftLabel);
+      return {
+        label: leftLabel,
+        period: meta ? meta.period : null,
+        diffDate: meta ? meta.diffDate : null,
+        cloudfrontFolder: folder
+      };
     }
-    if (idx >= config.periods.length) return null;
+
+    const idx = currentPeriodIndex + offset;
+    if (idx < 0 || idx >= config.periods.length) return null;
     const label = config.periods[idx];
     const meta = periodMeta(label);
     return {
